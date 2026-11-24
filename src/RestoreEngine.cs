@@ -293,6 +293,28 @@ namespace SqlBackupManager
 
                 // 2. 決定資料檔位置 (MOVE)
                 var si = SqlOps.GetServerInfo(conn);
+
+                // 網路上的備份檔：SQL 服務帳戶常讀不到 → 先複製到 SQL Server 本機暫存
+                if (NetPath.IsLocalServer(conn.Server) && !string.IsNullOrWhiteSpace(si.DefaultBackupPath))
+                {
+                    string stage = Path.Combine(si.DefaultBackupPath, "_SqlBackupManager_stage");
+                    for (int i = 0; i < files.Count; i++)
+                    {
+                        if (!files[i].Any(NetPath.IsNetwork)) continue;
+                        try { SqlOps.Exec(conn, "EXEC master.dbo.xp_create_subdir " + SqlOps.S(stage)); } catch { }
+                        try { Directory.CreateDirectory(stage); } catch { }
+                        var local = new List<string>();
+                        foreach (var f in files[i])
+                        {
+                            if (!NetPath.IsNetwork(f)) { local.Add(f); continue; }
+                            BackupEngine.Report("從網路位置複製 " + Path.GetFileName(f) + "…", -1);
+                            string dst = Path.Combine(stage, Path.GetFileName(f));
+                            File.Copy(f, dst, true);
+                            temps.Add(dst); local.Add(dst);
+                        }
+                        files[i] = local;
+                    }
+                }
                 var fileList = SqlOps.ReadFileList(conn, files[0]);
                 var current = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 if (exists)

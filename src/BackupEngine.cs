@@ -171,10 +171,23 @@ namespace SqlBackupManager
             bool fellBack = false;
             try
             {
-                string dir = DirFor(job, job.TargetPath, d.Name);
+                string finalDir = DirFor(job, job.TargetPath, d.Name);
+                string dir = finalDir;
+                bool stage = false;
                 if (!url)
                 {
-                    try { Directory.CreateDirectory(dir); } catch { /* 可能只有 SQL 服務帳戶有權限，交給 SQL Server 判斷 */ }
+                    // 網路路徑：SQL 服務帳戶看不到對應磁碟機 (Z:)，也常沒有 NAS 權限
+                    // → 先備份到 SQL Server 本機的預設備份資料夾，完成後由本程式複製過去
+                    bool net = NetPath.IsNetwork(finalDir);
+                    if (net && job.StageNetwork && NetPath.IsLocalServer(job.SqlConn.Server) && !string.IsNullOrWhiteSpace(si.DefaultBackupPath))
+                    {
+                        stage = true;
+                        dir = Path.Combine(si.DefaultBackupPath, "_SqlBackupManager_stage");
+                    }
+                    else if (net) dir = NetPath.ToUnc(finalDir);   // 至少把 Z:\ 換成 \\伺服器\分享
+                    try { Directory.CreateDirectory(stage ? finalDir : dir); } catch { }
+                    // 用 SQL Server 服務帳戶的身分建立資料夾 (避免作業系統錯誤 3：找不到路徑)
+                    try { SqlOps.Exec(job.SqlConn, "EXEC master.dbo.xp_create_subdir " + SqlOps.S(dir)); } catch { }
                     try
                     {
                         string root = Path.GetPathRoot(Path.GetFullPath(dir));
@@ -247,6 +260,22 @@ namespace SqlBackupManager
                         files = new List<string> { zip };
                         shown = zip;
                     }
+                    if (stage)
+                    {
+                        Report(d.Name + " 複製到網路位置…", -1);
+                        Directory.CreateDirectory(finalDir);
+                        var moved = new List<string>();
+                        foreach (var f in files)
+                        {
+                            string dst = Path.Combine(finalDir, Path.GetFileName(f));
+                            File.Copy(f, dst, true);
+                            if (new FileInfo(dst).Length != new FileInfo(f).Length) throw new IOException("複製到網路位置後檔案大小不符：" + dst);
+                            File.Delete(f);
+                            moved.Add(dst);
+                        }
+                        files = moved;
+                        shown = files[0];
+                    }
                     foreach (var f in files) try { size += new FileInfo(f).Length; } catch { }
 
                     if (!string.IsNullOrWhiteSpace(job.SecondaryPath))
@@ -268,6 +297,8 @@ namespace SqlBackupManager
                 string hint = "";
                 if (ex.Message.Contains("Operating system error 5") || ex.Message.Contains("作業系統錯誤 5"))
                     hint = "（SQL Server 服務帳戶 " + si.ServiceAccount + " 對備份資料夾沒有寫入權限）";
+                else if (ex.Message.Contains("Operating system error 3") || ex.Message.Contains("作業系統錯誤 3"))
+                    hint = "（SQL Server 所在電腦找不到這個資料夾：請確認磁碟機存在；網路位置請用 \\\\伺服器\\分享 並勾選「先備份到本機再複製」，服務帳戶看不到 Z: 這類對應磁碟機）";
                 Add(res, new LogEntry { Job = job.Name, Database = d.Name, Kind = BackupJob.KindText(kind), Status = LogEntry.Failed, File = files.Count > 0 ? files[0] : "", DurationSec = sw.Elapsed.TotalSeconds, Message = ex.Message + hint });
             }
         }
@@ -521,6 +552,58 @@ namespace SqlBackupManager
             }
             if (deleted > 0)
                 Add(res, new LogEntry { Job = job.Name, Kind = "清理", Status = LogEntry.Info, File = basePath, SizeBytes = freed, Message = "已刪除超過 " + job.RetentionDays + " 天的備份檔 " + deleted + " 個" });
+        }
+    }
+
+    /// <summary>網路路徑判斷與對應磁碟機 → UNC 轉換。</summary>
+    public static class NetPath
+    {
+        [System.Runtime.InteropServices.DllImport("mpr.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int WNetGetConnection(string localName, StringBuilder remoteName, ref int length);
+
+        public static bool IsNetwork(string p)
+        {
+            if (string.IsNullOrWhiteSpace(p)) return false;
+            if (p.StartsWith(@"\\")) return true;
+            try
+            {
+                string root = Path.GetPathRoot(p);
+                if (string.IsNullOrEmpty(root) || root.Length < 2 || root[1] != ':') return false;
+                return new DriveInfo(root.Substring(0, 1)).DriveType == DriveType.Network;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Z:\Backup → \\NAS\share\Backup (對應磁碟機才轉換)。</summary>
+        public static string ToUnc(string p)
+        {
+            try
+            {
+                if (p.Length < 2 || p[1] != ':') return p;
+                var sb = new StringBuilder(512); int len = sb.Capacity;
+                if (WNetGetConnection(p.Substring(0, 2), sb, ref len) == 0)
+                    return sb.ToString().TrimEnd('\\') + p.Substring(2);
+            }
+            catch { }
+            return p;
+        }
+
+        /// <summary>SQL Server 是否就在這台電腦上 (才能使用本機暫存再複製)。</summary>
+        public static bool IsLocalServer(string server)
+        {
+            string h = (server ?? "").Trim();
+            if (h.StartsWith("tcp:", StringComparison.OrdinalIgnoreCase)) h = h.Substring(4);
+            if (h.StartsWith("np:", StringComparison.OrdinalIgnoreCase) || h.StartsWith("lpc:", StringComparison.OrdinalIgnoreCase)) h = h.Substring(h.IndexOf(':') + 1);
+            h = h.Split('\\')[0].Split(',')[0].Trim();
+            if (h == "" || h == "." || h == "(local)" || h == "(localdb)") return true;
+            if (h.Equals("localhost", StringComparison.OrdinalIgnoreCase) || h == "127.0.0.1" || h == "::1") return true;
+            if (h.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)) return true;
+            try
+            {
+                var mine = System.Net.Dns.GetHostAddresses(Environment.MachineName);
+                return System.Net.Dns.GetHostAddresses(h).Any(a => mine.Any(m => m.Equals(a)));
+            }
+            catch { return false; }
         }
     }
 

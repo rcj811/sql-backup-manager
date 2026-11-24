@@ -261,6 +261,35 @@ namespace SqlBackupManager
         }
     }
 
+    public static class PathHelper
+    {
+        /// <summary>本機建議的備份資料夾：有 D 槽 (固定磁碟) 用 D:\SQLBackup，否則 C:\SQLBackup。</summary>
+        public static string SuggestedBackupDir()
+        {
+            try
+            {
+                var d = new DriveInfo("D");
+                if (d.IsReady && d.DriveType == DriveType.Fixed) return @"D:\SQLBackup";
+            }
+            catch { }
+            return @"C:\SQLBackup";
+        }
+
+        /// <summary>路徑是否可用：非空白，且 (網路/網址路徑，或本機磁碟機存在)。</summary>
+        public static bool LooksUsable(string p)
+        {
+            if (string.IsNullOrWhiteSpace(p)) return false;
+            p = p.Trim();
+            if (p.StartsWith(@"\\") || p.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return true;
+            try
+            {
+                string root = Path.GetPathRoot(p);
+                return !string.IsNullOrEmpty(root) && Directory.Exists(root);
+            }
+            catch { return false; }
+        }
+    }
+
     public static class Fmt
     {
         public static string Size(long b)

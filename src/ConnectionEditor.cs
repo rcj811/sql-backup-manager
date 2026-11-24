@@ -16,6 +16,8 @@ namespace SqlBackupManager
         public DbEngine Engine { get; private set; }
         public bool Verified { get; private set; }
         public List<DbInfo> Databases = new List<DbInfo>();
+        /// <summary>測試成功後，伺服器預設的備份資料夾 (SQL Server)。</summary>
+        public string DefaultBackupDir;
         public event Action VerifiedChanged;
 
         readonly Panel pSql = new Panel { BackColor = Color.White }, pTool = new Panel { BackColor = Color.White };
@@ -172,9 +174,9 @@ namespace SqlBackupManager
             {
                 try
                 {
-                    List<DbInfo> dbs;
-                    string info = ConnTest.Test(e, sql, tool, out dbs);
-                    UI(() => { btnTest.Enabled = true; Databases = dbs; Verified = true; SetResult("✔ 連線成功　" + info, Theme.Success); RaiseVerified(); });
+                    List<DbInfo> dbs; string dir;
+                    string info = ConnTest.Test(e, sql, tool, out dbs, out dir);
+                    UI(() => { btnTest.Enabled = true; Databases = dbs; DefaultBackupDir = dir; Verified = true; SetResult("✔ 連線成功　" + info, Theme.Success); RaiseVerified(); });
                 }
                 catch (Exception ex)
                 {

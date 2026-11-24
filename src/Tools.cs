@@ -284,9 +284,18 @@ namespace SqlBackupManager
     {
         public static string Test(DbEngine e, ConnectionSettings sql, ToolConnection tool, out List<DbInfo> dbs)
         {
+            string dir;
+            return Test(e, sql, tool, out dbs, out dir);
+        }
+
+        /// <summary>同上，另外回傳伺服器預設的備份資料夾 (SQL Server 才有，其他為 null)。</summary>
+        public static string Test(DbEngine e, ConnectionSettings sql, ToolConnection tool, out List<DbInfo> dbs, out string defaultBackupDir)
+        {
+            defaultBackupDir = null;
             if (e == DbEngine.SqlServer)
             {
                 var si = SqlOps.GetServerInfo(sql);
+                defaultBackupDir = string.IsNullOrWhiteSpace(si.DefaultBackupPath) ? null : si.DefaultBackupPath.Trim();
                 dbs = SqlOps.GetDatabases(sql);
                 return si.Summary + "｜資料庫 " + dbs.Count + " 個｜服務帳戶 " + si.ServiceAccount + (si.IsExpress ? "｜Express 版不支援原生壓縮，可改用 ZIP" : "");
             }

@@ -115,7 +115,7 @@ namespace SqlBackupManager
 
         // 備份選項
         public BackupKind Kind = BackupKind.Full;
-        public string TargetPath = @"D:\SQLBackup";
+        public string TargetPath = "";           // 由使用者指定
         public bool SubFolderPerDatabase = true;
         public bool Verify = true;
         public bool Checksum = true;
@@ -124,6 +124,7 @@ namespace SqlBackupManager
         public bool CopyOnly = false;
         public bool FallbackToFull = true;   // 找不到完整備份時，差異/記錄備份改做完整備份
         public string SecondaryPath = "";    // 第二份副本 (例如網路磁碟 / NAS)
+        public bool StageNetwork = true;     // 目標是網路路徑時：先備份到 SQL Server 本機，再由本程式複製過去
         public int RetentionDays = 14;       // 0 = 永久保留
 
         // SQL Server 進階

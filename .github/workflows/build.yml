@@ -30,7 +30,7 @@ jobs:
           Copy-Item out\SqlBackupManager.exe, out\SqlBackupManager.exe.config, README.md dist\
           Compress-Archive -Path dist\* -DestinationPath SqlBackupManager.zip -Force
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: SqlBackupManager
           path: dist/

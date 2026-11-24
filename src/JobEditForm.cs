@@ -28,6 +28,7 @@ namespace SqlBackupManager
         readonly Label lblDbStatus = new Label { AutoSize = true, UseMnemonic = false };
 
         readonly TextBox txtPath = new TextBox(), txtSecondary = new TextBox(), txtMirror = new TextBox(), txtCert = new TextBox();
+        CheckBox chkStage;
         CheckBox chkSub, chkVerify, chkChecksum, chkCompress, chkZip, chkCopyOnly, chkFallback, chkSingleTx, chkRoutines, chkPgCustom, chkGzip;
         readonly NumericUpDown numRetention = new NumericUpDown { Minimum = 0, Maximum = 3650 };
         readonly NumericUpDown numStripes = new NumericUpDown { Minimum = 1, Maximum = 16 };
@@ -47,6 +48,24 @@ namespace SqlBackupManager
         readonly Button btnOk;
         List<string> preChecked;
         bool loaded;
+        bool pathAuto, settingPath;   // 路徑是程式自動帶入的 (使用者還沒改過)
+        Button btnDefaultPath;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wp, string lp);
+
+        /// <summary>文字框空白時顯示的灰色提示字。</summary>
+        static void Cue(TextBox t, string text)
+        {
+            EventHandler h = (s, e) => { try { SendMessage(t.Handle, 0x1501, (IntPtr)1, text); } catch { } };
+            if (t.IsHandleCreated) h(t, EventArgs.Empty); else t.HandleCreated += h;
+        }
+
+        void SetPath(string p)
+        {
+            settingPath = true; txtPath.Text = p; settingPath = false;
+            pathAuto = true;
+        }
 
         public JobEditForm(BackupJob work, BackupJob original)
         {
@@ -94,8 +113,16 @@ namespace SqlBackupManager
             var f2 = new FieldLayout(tOpt, 20, Theme.S(18), 140);
             f2.Row("備份資料夾", txtPath, 440);
             var b1 = f2.Beside(txtPath, Theme.Btn("瀏覽…"));
+            btnDefaultPath = f2.Beside(b1, Theme.Btn("用伺服器預設"));
+            btnDefaultPath.Enabled = false;
+            btnDefaultPath.Click += (s, e) => { if (!string.IsNullOrEmpty(conn.DefaultBackupDir)) { SetPath(conn.DefaultBackupDir); pathAuto = false; } };
+            Cue(txtPath, "例如 D:\\SQLBackup 或 \\\\NAS\\Backup");
+            Cue(txtSecondary, "選填，例如 \\\\NAS\\Backup");
+            txtPath.TextChanged += (s, e) => { if (!settingPath) pathAuto = false; };
             f2.Note("本機路徑、網路路徑 (\\\\NAS\\Backup)，或 Azure Blob 網址 (https://帳戶.blob.core.windows.net/容器，需先建立 Credential)。", 720);
             chkSub = f2.Check("每個資料庫建立子資料夾", true, 0);
+            chkStage = f2.Check("網路路徑 (\\\\NAS 或對應的磁碟機 Z:) 時，先備份到 SQL Server 本機，再由本程式複製過去（建議）", true, 0);
+            f2.Note("SQL Server 服務帳戶看不到你登入後對應的網路磁碟機 (Z:)，通常也沒有 NAS 權限；勾選後由本程式（以目前登入的 Windows 帳號）負責複製，不必修改服務帳戶。", 720);
             f2.Row("第二備份位置", txtSecondary, 440);
             var b2 = f2.Beside(txtSecondary, Theme.Btn("瀏覽…"));
             f2.Note("選填。備份完成後由本程式複製一份過去（異地備份）。", 720);
@@ -202,7 +229,14 @@ namespace SqlBackupManager
             };
             cbKind.SelectedIndexChanged += (s, e) => UpdateEngineUi();
             rbAll.CheckedChanged += (s, e) => { lstDb.Enabled = rbPick.Checked; chkSys.Enabled = rbAll.Checked; };
-            conn.VerifiedChanged += () => { UpdateVerifyLabel(); if (conn.Verified) FillDatabases(conn.Databases); };
+            conn.VerifiedChanged += () =>
+            {
+                UpdateVerifyLabel();
+                if (!conn.Verified) return;
+                FillDatabases(conn.Databases);
+                bool hasDef = Engine == DbEngine.SqlServer && !string.IsNullOrEmpty(conn.DefaultBackupDir);
+                btnDefaultPath.Enabled = hasDef;
+            };
 
             LoadFromJob();
             loaded = true;
@@ -306,7 +340,7 @@ namespace SqlBackupManager
             j.ConnVerified = conn.Verified; if (conn.Verified) j.ConnVerifiedAt = DateTime.Now;
             j.AllUserDatabases = rbAll.Checked; j.IncludeSystemDatabases = chkSys.Checked;
             j.Databases = lstDb.CheckedItems.Cast<object>().Select(NameOf).ToList();
-            j.TargetPath = txtPath.Text.Trim(); j.SecondaryPath = txtSecondary.Text.Trim(); j.SubFolderPerDatabase = chkSub.Checked;
+            j.TargetPath = txtPath.Text.Trim(); j.SecondaryPath = txtSecondary.Text.Trim(); j.SubFolderPerDatabase = chkSub.Checked; j.StageNetwork = chkStage.Checked;
             j.RetentionDays = (int)numRetention.Value;
             j.Verify = chkVerify.Checked; j.Checksum = chkChecksum.Checked; j.Compression = chkCompress.Checked; j.ZipAfterBackup = chkZip.Checked;
             j.CopyOnly = chkCopyOnly.Checked; j.FallbackToFull = chkFallback.Checked;
@@ -352,7 +386,9 @@ namespace SqlBackupManager
             preChecked = new List<string>(j.Databases);
             foreach (var n in j.Databases) lstDb.Items.Add(n, true);
             lblDbStatus.Text = "測試連線後載入清單";
-            txtPath.Text = j.TargetPath; txtSecondary.Text = j.SecondaryPath; chkSub.Checked = j.SubFolderPerDatabase;
+            settingPath = true; txtPath.Text = (j.TargetPath ?? "").Trim(); settingPath = false;
+            chkStage.Checked = j.StageNetwork;
+            txtSecondary.Text = j.SecondaryPath; chkSub.Checked = j.SubFolderPerDatabase;
             numRetention.Value = Math.Max(0, Math.Min(3650, j.RetentionDays));
             chkVerify.Checked = j.Verify; chkChecksum.Checked = j.Checksum; chkCompress.Checked = j.Compression; chkZip.Checked = j.ZipAfterBackup;
             chkCopyOnly.Checked = j.CopyOnly; chkFallback.Checked = j.FallbackToFull;
@@ -379,7 +415,8 @@ namespace SqlBackupManager
             if (name == "") { err = "請輸入工作名稱。"; tab = 0; }
             else if (SettingsStore.Current.Jobs.Any(x => x != original && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) { err = "已有相同名稱的工作，請換一個名稱（命令列 --run 會用名稱找工作）。"; tab = 0; }
             else if (!conn.Verified) { err = "連線尚未驗證成功。\n請在「1. 連線」頁按「測試連線」，成功後才能儲存。"; tab = 0; }
-            else if (txtPath.Text.Trim() == "") { err = "請輸入備份資料夾。"; tab = 2; }
+            else if (txtPath.Text.Trim() == "") { err = "請指定備份資料夾（可按「瀏覽…」選擇，或按「用伺服器預設」）。"; tab = 2; }
+
             else if (BackupEngine.IsUrl(txtPath.Text.Trim()) && (Engine != DbEngine.SqlServer || Kind == BackupKind.Bacpac)) { err = "只有 SQL Server 原生備份可以備份到 URL。"; tab = 2; }
             else if (rbPick.Checked && Kind != BackupKind.Globals && lstDb.CheckedItems.Count == 0) { err = "請至少勾選一個資料庫，或改選「全部使用者資料庫」。"; tab = 1; }
             else if (cbSchedule.SelectedIndex == (int)ScheduleKind.Weekly && !chkDays.Any(c => c.Checked)) { err = "每週排程請至少勾選一天。"; tab = 3; }
@@ -388,6 +425,13 @@ namespace SqlBackupManager
                 if (tab >= 0) tabs.SelectedIndex = tab;
                 MessageBox.Show(err, "備份工作", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
+            }
+            if (!PathHelper.LooksUsable(txtPath.Text))
+            {
+                tabs.SelectedIndex = 2;
+                if (MessageBox.Show("這台電腦找不到備份資料夾的磁碟機：\n" + txtPath.Text.Trim() +
+                    "\n\n如果 SQL Server 在另一台電腦，而這是那台電腦上的路徑，可以按「是」繼續；\n否則請按「否」修改路徑。",
+                    "備份資料夾", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
             }
             ToJob(job);
             DialogResult = DialogResult.OK;

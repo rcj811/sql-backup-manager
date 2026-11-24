@@ -312,7 +312,7 @@ namespace SqlBackupManager
                 work = new BackupJob { Name = UniqueName("每日完整備份"), ConnSet = true };
                 // 預設帶入最近一個工作的連線，方便同一台伺服器建立多個工作 (仍需重新驗證)
                 var last = SettingsStore.Current.Jobs.LastOrDefault();
-                if (last != null) { work.Engine = last.Engine; work.SqlConn = last.SqlConn.Copy(); work.ToolConn = last.ToolConn.Copy(); work.TargetPath = last.TargetPath; work.Kind = BackupJob.KindsFor(last.Engine)[0]; }
+                if (last != null) { work.Engine = last.Engine; work.SqlConn = last.SqlConn.Copy(); work.ToolConn = last.ToolConn.Copy(); work.Kind = BackupJob.KindsFor(last.Engine)[0]; }
             }
             else work = job.Clone();
             using (var f = new JobEditForm(work, job))
