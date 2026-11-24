@@ -179,6 +179,7 @@ namespace SqlBackupManager
                     // 網路路徑：SQL 服務帳戶看不到對應磁碟機 (Z:)，也常沒有 NAS 權限
                     // → 先備份到 SQL Server 本機的預設備份資料夾，完成後由本程式複製過去
                     bool net = NetPath.IsNetwork(finalDir);
+                    if (net) NetShare.Connect(finalDir, job.NetUser, job.NetPassword);
                     if (net && job.StageNetwork && NetPath.IsLocalServer(job.SqlConn.Server) && !string.IsNullOrWhiteSpace(si.DefaultBackupPath))
                     {
                         stage = true;
@@ -281,6 +282,7 @@ namespace SqlBackupManager
                     if (!string.IsNullOrWhiteSpace(job.SecondaryPath))
                     {
                         Report(d.Name + " 複製到第二備份位置…", -1);
+                        if (NetPath.IsNetwork(job.SecondaryPath)) NetShare.Connect(job.SecondaryPath, job.NetUser, job.NetPassword);
                         string dir2 = DirFor(job, job.SecondaryPath, d.Name);
                         Directory.CreateDirectory(dir2);
                         foreach (var f in files) File.Copy(f, Path.Combine(dir2, Path.GetFileName(f)), true);
@@ -435,6 +437,7 @@ namespace SqlBackupManager
         {
             if (string.IsNullOrWhiteSpace(job.SecondaryPath)) return;
             Report(db + " 複製到第二備份位置…", -1);
+            if (NetPath.IsNetwork(job.SecondaryPath)) NetShare.Connect(job.SecondaryPath, job.NetUser, job.NetPassword);
             string dir2 = DirFor(job, job.SecondaryPath, db);
             Directory.CreateDirectory(dir2);
             File.Copy(file, Path.Combine(dir2, Path.GetFileName(file)), true);
@@ -604,6 +607,63 @@ namespace SqlBackupManager
                 return System.Net.Dns.GetHostAddresses(h).Any(a => mine.Any(m => m.Equals(a)));
             }
             catch { return false; }
+        }
+    }
+
+    /// <summary>用指定帳號連線到網路分享 (\\\\伺服器\\分享)，並測試是否可寫入。</summary>
+    public static class NetShare
+    {
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        class NETRESOURCE
+        {
+            public int dwScope, dwType = 1 /* DISK */, dwDisplayType, dwUsage;
+            public string lpLocalName, lpRemoteName, lpComment, lpProvider;
+        }
+
+        [System.Runtime.InteropServices.DllImport("mpr.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int WNetAddConnection2(NETRESOURCE res, string password, string user, int flags);
+        [System.Runtime.InteropServices.DllImport("mpr.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int WNetCancelConnection2(string name, int flags, bool force);
+
+        /// <summary>\\\\server\\share\\a\\b → \\\\server\\share</summary>
+        public static string ShareRoot(string unc)
+        {
+            var parts = unc.TrimStart('\\').Split('\\');
+            return parts.Length >= 2 ? @"\\" + parts[0] + "\\" + parts[1] : unc;
+        }
+
+        /// <summary>以帳號密碼連線；帳號空白則使用目前登入身分。失敗會丟出例外。</summary>
+        public static void Connect(string path, string user, string password)
+        {
+            if (string.IsNullOrWhiteSpace(user)) return;
+            string root = ShareRoot(NetPath.ToUnc(path));
+            var nr = new NETRESOURCE { lpRemoteName = root };
+            int rc = WNetAddConnection2(nr, password, user, 0);
+            if (rc == 1219)
+            {
+                // 已經用其他帳號連過同一台伺服器：先中斷這個分享再重連
+                WNetCancelConnection2(root, 0, true);
+                rc = WNetAddConnection2(nr, password, user, 0);
+                if (rc == 1219) rc = 0; // 仍有其他分享以不同帳號連線中，沿用現有連線並以實際寫入測試為準
+            }
+            if (rc != 0 && rc != 85 /* 已連線 */)
+                throw new System.ComponentModel.Win32Exception(rc, "無法連線到 " + root + "：" + new System.ComponentModel.Win32Exception(rc).Message + "（代碼 " + rc + "）");
+        }
+
+        /// <summary>連線後建立資料夾、寫入並刪除測試檔，確認可寫入。</summary>
+        public static void TestWrite(string path, string user, string password)
+        {
+            string unc = NetPath.ToUnc(path);
+            Connect(unc, user, password);
+            try
+            {
+                Directory.CreateDirectory(unc);
+                string f = Path.Combine(unc, "_sbm_write_test_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp");
+                File.WriteAllText(f, "SqlBackupManager " + DateTime.Now.ToString("s"));
+                File.Delete(f);
+            }
+            catch (UnauthorizedAccessException) { throw new Exception(unc + "：帳號沒有寫入權限"); }
+            catch (IOException ex) { throw new Exception(unc + "：" + ex.Message); }
         }
     }
 

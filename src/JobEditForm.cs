@@ -28,7 +28,12 @@ namespace SqlBackupManager
         readonly Label lblDbStatus = new Label { AutoSize = true, UseMnemonic = false };
 
         readonly TextBox txtPath = new TextBox(), txtSecondary = new TextBox(), txtMirror = new TextBox(), txtCert = new TextBox();
-        CheckBox chkStage;
+        readonly Panel pnlNet = new Panel { BackColor = Color.FromArgb(247, 250, 255), Visible = false }, pnlRest = new Panel { BackColor = Color.White };
+        readonly TextBox txtNetUser = new TextBox(), txtNetPwd = new TextBox { UseSystemPasswordChar = true };
+        readonly Label lblNetInfo = new Label { AutoSize = false, UseMnemonic = false }, lblNetResult = new Label { AutoSize = false, UseMnemonic = false };
+        int restTopNoNet;
+        bool netVerified, netLoading;
+        string netVerifiedFor = "";
         CheckBox chkSub, chkVerify, chkChecksum, chkCompress, chkZip, chkCopyOnly, chkFallback, chkSingleTx, chkRoutines, chkPgCustom, chkGzip;
         readonly NumericUpDown numRetention = new NumericUpDown { Minimum = 0, Maximum = 3650 };
         readonly NumericUpDown numStripes = new NumericUpDown { Minimum = 1, Maximum = 16 };
@@ -48,7 +53,6 @@ namespace SqlBackupManager
         readonly Button btnOk;
         List<string> preChecked;
         bool loaded;
-        bool pathAuto, settingPath;   // 路徑是程式自動帶入的 (使用者還沒改過)
         Button btnDefaultPath;
 
         [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
@@ -63,8 +67,7 @@ namespace SqlBackupManager
 
         void SetPath(string p)
         {
-            settingPath = true; txtPath.Text = p; settingPath = false;
-            pathAuto = true;
+            txtPath.Text = p;
         }
 
         public JobEditForm(BackupJob work, BackupJob original)
@@ -115,26 +118,47 @@ namespace SqlBackupManager
             var b1 = f2.Beside(txtPath, Theme.Btn("瀏覽…"));
             btnDefaultPath = f2.Beside(b1, Theme.Btn("用伺服器預設"));
             btnDefaultPath.Enabled = false;
-            btnDefaultPath.Click += (s, e) => { if (!string.IsNullOrEmpty(conn.DefaultBackupDir)) { SetPath(conn.DefaultBackupDir); pathAuto = false; } };
+            btnDefaultPath.Click += (s, e) => { if (!string.IsNullOrEmpty(conn.DefaultBackupDir)) txtPath.Text = conn.DefaultBackupDir; };
             Cue(txtPath, "例如 D:\\SQLBackup 或 \\\\NAS\\Backup");
             Cue(txtSecondary, "選填，例如 \\\\NAS\\Backup");
-            txtPath.TextChanged += (s, e) => { if (!settingPath) pathAuto = false; };
-            f2.Note("本機路徑、網路路徑 (\\\\NAS\\Backup)，或 Azure Blob 網址 (https://帳戶.blob.core.windows.net/容器，需先建立 Credential)。", 720);
-            chkSub = f2.Check("每個資料庫建立子資料夾", true, 0);
-            chkStage = f2.Check("網路路徑 (\\\\NAS 或對應的磁碟機 Z:) 時，先備份到 SQL Server 本機，再由本程式複製過去（建議）", true, 0);
-            f2.Note("SQL Server 服務帳戶看不到你登入後對應的網路磁碟機 (Z:)，通常也沒有 NAS 權限；勾選後由本程式（以目前登入的 Windows 帳號）負責複製，不必修改服務帳戶。", 720);
+            f2.Note("本機路徑、網路路徑 (\\\\NAS\\Backup 或對應的磁碟機 Z:)，或 Azure Blob 網址。網路路徑會自動偵測並要求驗證帳號。", 720);
             f2.Row("第二備份位置", txtSecondary, 440);
             var b2 = f2.Beside(txtSecondary, Theme.Btn("瀏覽…"));
             f2.Note("選填。備份完成後由本程式複製一份過去（異地備份）。", 720);
-            f2.Row("保留天數", numRetention, 90, "超過天數的舊備份自動刪除；0 = 永久保留");
-            f2.Section("備份選項");
-            chkVerify = f2.Check("備份後驗證備份檔", true);
-            chkChecksum = f2.Check("計算總和檢查碼 (CHECKSUM)", true);
-            chkCompress = f2.Check("原生備份壓縮 (Standard 以上)", true);
-            chkZip = f2.Check("備份後壓縮成 ZIP (Express 適用)", false);
-            chkCopyOnly = f2.Check("僅複製備份 (COPY_ONLY，不影響備份鏈)", false);
-            chkFallback = f2.Check("找不到基底備份時自動改做完整備份", true);
-            int advTop = f2.Y;
+
+            // 網路路徑區 (偵測到網路路徑才顯示)
+            pnlNet.Location = new Point(0, f2.Y); pnlNet.Width = Theme.S(820);
+            var fn0 = new FieldLayout(pnlNet, 20, 0, 140);
+            fn0.Section("網路位置驗證");
+            lblNetInfo.Font = Theme.F(9f); lblNetInfo.ForeColor = Theme.SubText;
+            fn0.Row(null, lblNetInfo, 720);
+            lblNetInfo.Height = TextRenderer.MeasureText("國\n國\n國\n國", lblNetInfo.Font).Height + Theme.S(4);
+            fn0.Y = lblNetInfo.Bottom + Theme.S(6);
+            fn0.Row("網路帳號", txtNetUser, 260, "例如 NAS\\admin、DOMAIN\\user；空白 = 使用目前登入的帳號");
+            fn0.Row("網路密碼", txtNetPwd, 260, "以 DPAPI 加密儲存於本機");
+            var btnNet = Theme.Btn("驗證網路路徑", true);
+            fn0.Buttons(btnNet);
+            fn0.Y -= Theme.S(8);
+            lblNetResult.Font = Theme.F(9.5f);
+            fn0.Row(null, lblNetResult, 720);
+            lblNetResult.Height = TextRenderer.MeasureText("國\n國", lblNetResult.Font).Height + Theme.S(4);
+            pnlNet.Height = lblNetResult.Bottom + Theme.S(12);
+            tOpt.Controls.Add(pnlNet);
+            btnNet.Click += (s, e) => TestNetwork();
+
+            // 其餘選項 (位置隨網路區顯示/隱藏而上下移動)
+            pnlRest.Width = Theme.S(820);
+            var fr = new FieldLayout(pnlRest, 20, 0, 140);
+            chkSub = fr.Check("每個資料庫建立子資料夾", true, 0);
+            fr.Row("保留天數", numRetention, 90, "超過天數的舊備份自動刪除；0 = 永久保留");
+            fr.Section("備份選項");
+            chkVerify = fr.Check("備份後驗證備份檔", true);
+            chkChecksum = fr.Check("計算總和檢查碼 (CHECKSUM)", true);
+            chkCompress = fr.Check("原生備份壓縮 (Standard 以上)", true);
+            chkZip = fr.Check("備份後壓縮成 ZIP (Express 適用)", false);
+            chkCopyOnly = fr.Check("僅複製備份 (COPY_ONLY，不影響備份鏈)", false);
+            chkFallback = fr.Check("找不到基底備份時自動改做完整備份", true);
+            int advTop = fr.Y;
 
             var fa = new FieldLayout(pnlSqlAdv, 20, 0, 140);
             fa.Section("SQL Server 進階");
@@ -145,7 +169,7 @@ namespace SqlBackupManager
             cbAlgo.Items.AddRange(new object[] { "AES_256", "AES_192", "AES_128", "TRIPLE_DES_3KEY" });
             cbAlgo.Font = Theme.F(9.5f); cbAlgo.Width = Theme.S(160); fa.Beside(txtCert, cbAlgo);
             fa.Note("填入 master 中的伺服器憑證名稱即啟用加密（Standard 以上，2014+）。請另外備份憑證與私密金鑰，否則無法還原！", 720, Theme.Warning);
-            pnlSqlAdv.Location = new Point(0, advTop); pnlSqlAdv.Size = new Size(Theme.S(820), fa.Y); tOpt.Controls.Add(pnlSqlAdv);
+            pnlSqlAdv.Location = new Point(0, advTop); pnlSqlAdv.Size = new Size(Theme.S(820), fa.Y); pnlRest.Controls.Add(pnlSqlAdv);
 
             var fd = new FieldLayout(pnlDumpAdv, 20, 0, 140);
             fd.Section("Dump 選項");
@@ -153,10 +177,18 @@ namespace SqlBackupManager
             chkRoutines = fd.Check("包含預存程序、函數、觸發程序、事件", true);
             chkPgCustom = fd.Check("PostgreSQL 使用 custom 格式 (-Fc，可選擇性還原，已壓縮)", true);
             chkGzip = fd.Check("純 SQL 輸出以 gzip 壓縮 (.sql.gz)", true);
-            pnlDumpAdv.Location = new Point(0, advTop); pnlDumpAdv.Size = new Size(Theme.S(820), fd.Y); tOpt.Controls.Add(pnlDumpAdv);
+            pnlDumpAdv.Location = new Point(0, advTop); pnlDumpAdv.Size = new Size(Theme.S(820), fd.Y); pnlRest.Controls.Add(pnlDumpAdv);
+            pnlRest.Height = advTop + Math.Max(pnlSqlAdv.Height, pnlDumpAdv.Height) + Theme.S(10);
+            tOpt.Controls.Add(pnlRest);
+            restTopNoNet = f2.Y;
 
             b1.Click += (s, e) => { var p = BrowseFolder(txtPath.Text); if (p != null) txtPath.Text = p; };
             b2.Click += (s, e) => { var p = BrowseFolder(txtSecondary.Text); if (p != null) txtSecondary.Text = p; };
+            txtPath.TextChanged += (s, e) => OnPathsChanged();
+            txtSecondary.TextChanged += (s, e) => OnPathsChanged();
+            txtNetUser.TextChanged += (s, e) => InvalidateNet();
+            txtNetPwd.TextChanged += (s, e) => InvalidateNet();
+
 
             // ── 4. 排程
             var f3 = new FieldLayout(tSch, 20, Theme.S(18), 140);
@@ -268,6 +300,70 @@ namespace SqlBackupManager
             lblVerify.Text = conn.Verified ? "✔ 連線已驗證" : "⚠ 連線尚未驗證（請到「1. 連線」按測試連線）";
         }
 
+        /// <summary>目前填寫的路徑中，屬於網路位置的 (已把 Z: 轉成 UNC)。</summary>
+        List<string> NetPaths()
+        {
+            var list = new List<string>();
+            foreach (var p in new[] { txtPath.Text.Trim(), txtSecondary.Text.Trim() })
+                if (p != "" && !BackupEngine.IsUrl(p) && NetPath.IsNetwork(p)) list.Add(NetPath.ToUnc(p));
+            return list;
+        }
+
+        string NetKey() { return string.Join("|", NetPaths()).ToLowerInvariant() + "|" + txtNetUser.Text.Trim().ToLowerInvariant() + "|" + txtNetPwd.Text; }
+
+        void OnPathsChanged()
+        {
+            var nets = NetPaths();
+            bool show = nets.Count > 0;
+            pnlNet.Visible = show;
+            pnlRest.Top = show ? pnlNet.Bottom + Theme.S(6) : restTopNoNet;
+            if (show)
+            {
+                var sb = new System.Text.StringBuilder("偵測到網路路徑：");
+                foreach (var p in new[] { txtPath.Text.Trim(), txtSecondary.Text.Trim() })
+                {
+                    if (p == "" || !NetPath.IsNetwork(p)) continue;
+                    string unc = NetPath.ToUnc(p);
+                    sb.Append("\n  • ").Append(unc).Append(unc != p ? "（" + p.Substring(0, 2) + " 已自動轉換成網路路徑）" : "");
+                }
+                sb.Append("\n備份時會先寫到 SQL Server 本機，再用下面的帳號複製過去。");
+                lblNetInfo.Text = sb.ToString();
+            }
+            InvalidateNet();
+        }
+
+        void InvalidateNet()
+        {
+            if (netLoading) return;
+            bool ok = netVerified && netVerifiedFor == NetKey();
+            lblNetResult.ForeColor = ok ? Theme.Success : Theme.Warning;
+            lblNetResult.Text = ok ? "✔ 網路路徑已驗證" : "尚未驗證：請按「驗證網路路徑」，成功後才能儲存";
+        }
+
+        void TestNetwork()
+        {
+            var paths = NetPaths();
+            if (paths.Count == 0) return;
+            string user = txtNetUser.Text.Trim(), pwd = txtNetPwd.Text, key = NetKey();
+            lblNetResult.ForeColor = Theme.SubText; lblNetResult.Text = "驗證中…";
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                string msg = null;
+                try { foreach (var p in paths) NetShare.TestWrite(p, user, pwd); }
+                catch (Exception ex) { msg = ex.Message; }
+                try
+                {
+                    BeginInvoke((Action)(() =>
+                    {
+                        netVerified = msg == null; netVerifiedFor = netVerified ? key : "";
+                        lblNetResult.ForeColor = netVerified ? Theme.Success : Theme.Danger;
+                        lblNetResult.Text = netVerified ? "✔ 驗證成功：可以寫入 " + string.Join("、", paths) : "✖ 驗證失敗：" + msg;
+                    }));
+                }
+                catch { }
+            });
+        }
+
         void FillKinds()
         {
             var cur = cbKind.SelectedIndex >= 0 ? Kind : job.Kind;
@@ -340,7 +436,8 @@ namespace SqlBackupManager
             j.ConnVerified = conn.Verified; if (conn.Verified) j.ConnVerifiedAt = DateTime.Now;
             j.AllUserDatabases = rbAll.Checked; j.IncludeSystemDatabases = chkSys.Checked;
             j.Databases = lstDb.CheckedItems.Cast<object>().Select(NameOf).ToList();
-            j.TargetPath = txtPath.Text.Trim(); j.SecondaryPath = txtSecondary.Text.Trim(); j.SubFolderPerDatabase = chkSub.Checked; j.StageNetwork = chkStage.Checked;
+            j.TargetPath = txtPath.Text.Trim(); j.SecondaryPath = txtSecondary.Text.Trim(); j.SubFolderPerDatabase = chkSub.Checked; j.StageNetwork = true;
+            j.NetUser = txtNetUser.Text.Trim(); j.NetPassword = txtNetPwd.Text; j.NetVerified = NetPaths().Count == 0 || netVerified;
             j.RetentionDays = (int)numRetention.Value;
             j.Verify = chkVerify.Checked; j.Checksum = chkChecksum.Checked; j.Compression = chkCompress.Checked; j.ZipAfterBackup = chkZip.Checked;
             j.CopyOnly = chkCopyOnly.Checked; j.FallbackToFull = chkFallback.Checked;
@@ -386,9 +483,15 @@ namespace SqlBackupManager
             preChecked = new List<string>(j.Databases);
             foreach (var n in j.Databases) lstDb.Items.Add(n, true);
             lblDbStatus.Text = "測試連線後載入清單";
-            settingPath = true; txtPath.Text = (j.TargetPath ?? "").Trim(); settingPath = false;
-            chkStage.Checked = j.StageNetwork;
-            txtSecondary.Text = j.SecondaryPath; chkSub.Checked = j.SubFolderPerDatabase;
+            txtPath.Text = (j.TargetPath ?? "").Trim();
+            netLoading = true;
+            txtNetUser.Text = j.NetUser; txtNetPwd.Text = j.NetPassword;
+            txtSecondary.Text = j.SecondaryPath;
+            netLoading = false;
+            netVerified = j.NetVerified && NetPaths().Count > 0;
+            netVerifiedFor = netVerified ? NetKey() : "";
+            OnPathsChanged();
+            chkSub.Checked = j.SubFolderPerDatabase;
             numRetention.Value = Math.Max(0, Math.Min(3650, j.RetentionDays));
             chkVerify.Checked = j.Verify; chkChecksum.Checked = j.Checksum; chkCompress.Checked = j.Compression; chkZip.Checked = j.ZipAfterBackup;
             chkCopyOnly.Checked = j.CopyOnly; chkFallback.Checked = j.FallbackToFull;
@@ -418,6 +521,7 @@ namespace SqlBackupManager
             else if (txtPath.Text.Trim() == "") { err = "請指定備份資料夾（可按「瀏覽…」選擇，或按「用伺服器預設」）。"; tab = 2; }
 
             else if (BackupEngine.IsUrl(txtPath.Text.Trim()) && (Engine != DbEngine.SqlServer || Kind == BackupKind.Bacpac)) { err = "只有 SQL Server 原生備份可以備份到 URL。"; tab = 2; }
+            else if (NetPaths().Count > 0 && !(netVerified && netVerifiedFor == NetKey())) { err = "偵測到網路路徑，請在「3. 存放位置與選項」輸入網路帳號密碼，並按「驗證網路路徑」成功後才能儲存。"; tab = 2; }
             else if (rbPick.Checked && Kind != BackupKind.Globals && lstDb.CheckedItems.Count == 0) { err = "請至少勾選一個資料庫，或改選「全部使用者資料庫」。"; tab = 1; }
             else if (cbSchedule.SelectedIndex == (int)ScheduleKind.Weekly && !chkDays.Any(c => c.Checked)) { err = "每週排程請至少勾選一天。"; tab = 3; }
             if (err != null)
