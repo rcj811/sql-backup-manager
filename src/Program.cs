@@ -9,8 +9,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("SQL Server / MySQL / PostgreSQL 排程備份與還原")]
 [assembly: AssemblyCompany("")]
 [assembly: AssemblyCopyright("")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace SqlBackupManager
 {
@@ -62,7 +62,7 @@ namespace SqlBackupManager
             AppDomain.CurrentDomain.UnhandledException += (s, e) => Report(e.ExceptionObject as Exception);
 
             bool minimized = args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
-            var form = new MainForm(minimized);
+            MainForm form = null;
 
             var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\" + ShowEventName);
             var t = new Thread(() =>
@@ -70,12 +70,21 @@ namespace SqlBackupManager
                 while (true)
                 {
                     show.WaitOne();
-                    try { form.BeginInvoke((Action)form.ShowFromTray); } catch { return; }
+                    var f = form;
+                    try { if (f != null && !f.IsDisposed) f.BeginInvoke((Action)f.ShowFromTray); } catch { }
                 }
             }) { IsBackground = true };
             t.Start();
 
-            Application.Run(form);
+            // 變更字體大小時會關閉並重新建立主視窗
+            while (true)
+            {
+                Theme.Init(SettingsStore.Current.General.FontSize);
+                form = new MainForm(minimized);
+                Application.Run(form);
+                if (!form.RebuildRequested) break;
+                minimized = false;
+            }
             GC.KeepAlive(mutex);
             return 0;
         }

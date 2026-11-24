@@ -21,6 +21,9 @@ namespace SqlBackupManager
         public string PasswordEnc = "";
         public string BinDir = "";   // 空白 = 自動尋找
 
+        public ToolConnection Copy() { return (ToolConnection)MemberwiseClone(); }
+        public string Key { get { return (Host + ":" + Port + ":" + User).ToLowerInvariant(); } }
+
         [XmlIgnore]
         public string Password
         {
@@ -39,6 +42,9 @@ namespace SqlBackupManager
         public string PasswordEnc = "";
         public int ConnectTimeoutSec = 15;
         public string SqlPackagePath = "";   // BACPAC 用，空白 = 自動尋找
+
+        public ConnectionSettings Copy() { return (ConnectionSettings)MemberwiseClone(); }
+        public string Key { get { return (Server + ":" + (UseWindowsAuth ? "win" : User)).ToLowerInvariant(); } }
 
         [XmlIgnore]
         public string Password
@@ -78,6 +84,7 @@ namespace SqlBackupManager
         public bool ShowBalloon = true;
         public bool SchedulerPaused = false;
         public int LogRetentionDays = 365;
+        public float FontSize = 10f;   // 介面字體大小 (pt)
     }
 
     public class BackupJob
@@ -86,6 +93,20 @@ namespace SqlBackupManager
         public string Name = "新備份工作";
         public bool Enabled = true;
         public DbEngine Engine = DbEngine.SqlServer;
+
+        // 連線 (每個工作各自設定)
+        public ConnectionSettings SqlConn = new ConnectionSettings();
+        public ToolConnection ToolConn = new ToolConnection { Port = 3306, User = "root" };
+        public bool ConnSet;            // 舊版設定檔移轉用
+        public bool ConnVerified;       // 連線已驗證成功
+        public DateTime? ConnVerifiedAt;
+
+        public string ServerText()
+        {
+            if (Engine == DbEngine.SqlServer) return SqlConn.Server;
+            return ToolConn.Host + ":" + ToolConn.Port;
+        }
+        public string ConnKey { get { return Engine + "|" + (Engine == DbEngine.SqlServer ? SqlConn.Key : ToolConn.Key); } }
 
         // 資料庫
         public bool AllUserDatabases = true;
@@ -136,6 +157,8 @@ namespace SqlBackupManager
         {
             var x = (BackupJob)MemberwiseClone();
             x.Databases = new List<string>(Databases);
+            x.SqlConn = SqlConn.Copy();
+            x.ToolConn = ToolConn.Copy();
             return x;
         }
 

@@ -142,137 +142,163 @@ namespace SqlBackupManager
 
     public static class MySqlTool
     {
-        static ToolConnection C { get { return SettingsStore.Current.MySql; } }
-        public static string Exe(string name) { return ToolRunner.Find(name, C.BinDir, @"MySQL\MySQL Server *\bin", @"MariaDB *\bin", @"MySQL\MySQL Workbench *"); }
+        public static string Exe(ToolConnection c, string name) { return ToolRunner.Find(name, c.BinDir, @"MySQL\MySQL Server *\bin", @"MariaDB *\bin", @"MySQL\MySQL Workbench *"); }
 
         /// <summary>密碼寫入暫存設定檔 (--defaults-extra-file)，避免出現在命令列。</summary>
-        static string WithDefaults(Func<string, string> run)
+        static string WithDefaults(ToolConnection c, Func<string, string> run)
         {
             string f = Path.Combine(Path.GetTempPath(), "sbm_" + Guid.NewGuid().ToString("N") + ".cnf");
-            File.WriteAllText(f, "[client]\r\nuser=" + C.User + "\r\npassword=\"" + C.Password.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"\r\nhost=" + C.Host + "\r\nport=" + C.Port + "\r\n", new UTF8Encoding(false));
+            File.WriteAllText(f, "[client]\r\nuser=" + c.User + "\r\npassword=\"" + c.Password.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"\r\nhost=" + c.Host + "\r\nport=" + c.Port + "\r\n", new UTF8Encoding(false));
             try { return run("--defaults-extra-file=" + ToolRunner.Quote(f)); }
             finally { try { File.Delete(f); } catch { } }
         }
 
-        public static string Query(string sql)
+        public static string Query(ToolConnection c, string sql)
         {
-            return WithDefaults(d => ToolRunner.Run(Exe("mysql.exe"), d + " -N -B -e " + ToolRunner.Quote(sql), null));
+            return WithDefaults(c, d => ToolRunner.Run(Exe(c, "mysql.exe"), d + " -N -B -e " + ToolRunner.Quote(sql), null));
         }
 
-        public static string Version() { return Query("SELECT VERSION()").Trim(); }
+        public static string Version(ToolConnection c) { return Query(c, "SELECT VERSION()").Trim(); }
 
-        public static List<DbInfo> Databases()
+        public static List<DbInfo> Databases(ToolConnection c)
         {
             var sys = new[] { "information_schema", "performance_schema", "mysql", "sys" };
-            return Query("SHOW DATABASES").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            return Query(c, "SHOW DATABASES").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(n => new DbInfo { Name = n.Trim(), Id = sys.Contains(n.Trim()) ? 1 : 100, State = "ONLINE", RecoveryModel = "" }).ToList();
         }
 
-        public static void Dump(string db, string file, BackupJob job, Action<string> onLine)
+        public static void Dump(ToolConnection c, string db, string file, BackupJob job, Action<string> onLine)
         {
             var a = new List<string> { "--default-character-set=utf8mb4", "--hex-blob", "--add-drop-table" };
             if (job.SingleTransaction) { a.Add("--single-transaction"); a.Add("--quick"); }
             if (job.DumpRoutines) { a.Add("--routines"); a.Add("--triggers"); a.Add("--events"); }
             a.Add(ToolRunner.Quote(db));
-            WithDefaults(d => ToolRunner.Run(Exe("mysqldump.exe"), d + " " + string.Join(" ", a), null, file, file.EndsWith(".gz"), null, onLine));
+            WithDefaults(c, d => ToolRunner.Run(Exe(c, "mysqldump.exe"), d + " " + string.Join(" ", a), null, file, file.EndsWith(".gz"), null, onLine));
         }
 
-        public static void Restore(string db, string file, bool dropFirst)
+        public static void Restore(ToolConnection c, string db, string file, bool dropFirst)
         {
             string q = "`" + db.Replace("`", "``") + "`";
-            if (dropFirst) Query("DROP DATABASE IF EXISTS " + q);
-            Query("CREATE DATABASE IF NOT EXISTS " + q + " CHARACTER SET utf8mb4");
-            WithDefaults(d => ToolRunner.Run(Exe("mysql.exe"), d + " --default-character-set=utf8mb4 " + ToolRunner.Quote(db), null, null, false, file));
+            if (dropFirst) Query(c, "DROP DATABASE IF EXISTS " + q);
+            Query(c, "CREATE DATABASE IF NOT EXISTS " + q + " CHARACTER SET utf8mb4");
+            WithDefaults(c, d => ToolRunner.Run(Exe(c, "mysql.exe"), d + " --default-character-set=utf8mb4 " + ToolRunner.Quote(db), null, null, false, file));
         }
 
-        public static bool Exists(string db) { return Query("SHOW DATABASES").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Any(x => x.Trim() == db); }
+        public static bool Exists(ToolConnection c, string db) { return Query(c, "SHOW DATABASES").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Any(x => x.Trim() == db); }
     }
 
     public static class PgTool
     {
-        static ToolConnection C { get { return SettingsStore.Current.PgSql; } }
-        public static string Exe(string name) { return ToolRunner.Find(name, C.BinDir, @"PostgreSQL\*\bin", @"pgAdmin 4\runtime", @"pgAdmin 4\*\runtime"); }
+        public static string Exe(ToolConnection c, string name) { return ToolRunner.Find(name, c.BinDir, @"PostgreSQL\*\bin", @"pgAdmin 4\runtime", @"pgAdmin 4\*\runtime"); }
 
-        static Dictionary<string, string> Env()
+        static Dictionary<string, string> Env(ToolConnection c)
         {
-            return new Dictionary<string, string> { { "PGPASSWORD", C.Password }, { "PGHOST", C.Host }, { "PGPORT", C.Port.ToString() }, { "PGUSER", C.User }, { "PGCLIENTENCODING", "UTF8" } };
+            return new Dictionary<string, string> { { "PGPASSWORD", c.Password }, { "PGHOST", c.Host }, { "PGPORT", c.Port.ToString() }, { "PGUSER", c.User }, { "PGCLIENTENCODING", "UTF8" } };
         }
 
-        public static string Query(string sql, string db = "postgres")
+        public static string Query(ToolConnection c, string sql, string db = "postgres")
         {
-            return ToolRunner.Run(Exe("psql.exe"), "-X -A -t -v ON_ERROR_STOP=1 -d " + ToolRunner.Quote(db) + " -c " + ToolRunner.Quote(sql), Env());
+            return ToolRunner.Run(Exe(c, "psql.exe"), "-X -A -t -v ON_ERROR_STOP=1 -d " + ToolRunner.Quote(db) + " -c " + ToolRunner.Quote(sql), Env(c));
         }
 
-        public static string Version() { return Query("SELECT version()").Trim(); }
+        public static string Version(ToolConnection c) { return Query(c, "SELECT version()").Trim(); }
 
-        public static List<DbInfo> Databases()
+        public static List<DbInfo> Databases(ToolConnection c)
         {
-            return Query("SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY 1")
+            return Query(c, "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY 1")
                 .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(n => new DbInfo { Name = n.Trim(), Id = n.Trim() == "postgres" ? 1 : 100, State = "ONLINE", RecoveryModel = "" }).ToList();
         }
 
-        public static void Dump(string db, string file, BackupJob job, Action<string> onLine)
+        public static void Dump(ToolConnection c, string db, string file, BackupJob job, Action<string> onLine)
         {
             if (job.PgCustomFormat)
-                ToolRunner.Run(Exe("pg_dump.exe"), "-Fc -Z 6 --no-password -f " + ToolRunner.Quote(file) + " " + ToolRunner.Quote(db), Env(), null, false, null, onLine);
+                ToolRunner.Run(Exe(c, "pg_dump.exe"), "-Fc -Z 6 --no-password -f " + ToolRunner.Quote(file) + " " + ToolRunner.Quote(db), Env(c), null, false, null, onLine);
             else
-                ToolRunner.Run(Exe("pg_dump.exe"), "-Fp --no-password --clean --if-exists " + ToolRunner.Quote(db), Env(), file, file.EndsWith(".gz"), null, onLine);
+                ToolRunner.Run(Exe(c, "pg_dump.exe"), "-Fp --no-password --clean --if-exists " + ToolRunner.Quote(db), Env(c), file, file.EndsWith(".gz"), null, onLine);
         }
 
-        public static void DumpGlobals(string file)
+        public static void DumpGlobals(ToolConnection c, string file)
         {
-            ToolRunner.Run(Exe("pg_dumpall.exe"), "--globals-only --no-password", Env(), file, file.EndsWith(".gz"));
+            ToolRunner.Run(Exe(c, "pg_dumpall.exe"), "--globals-only --no-password", Env(c), file, file.EndsWith(".gz"));
         }
 
-        public static bool Exists(string db)
+        public static bool Exists(ToolConnection c, string db)
         {
-            return Query("SELECT 1 FROM pg_database WHERE datname = '" + db.Replace("'", "''") + "'").Trim() == "1";
+            return Query(c, "SELECT 1 FROM pg_database WHERE datname = '" + db.Replace("'", "''") + "'").Trim() == "1";
         }
 
-        public static void Restore(string db, string file, bool dropFirst, bool kill)
+        public static string VerifyCustom(ToolConnection c, string file)
+        {
+            return ToolRunner.Run(Exe(c, "pg_restore.exe"), "-l " + ToolRunner.Quote(file), null);
+        }
+
+        public static void Restore(ToolConnection c, string db, string file, bool dropFirst, bool kill)
         {
             string q = "\"" + db.Replace("\"", "\"\"") + "\"";
             bool globals = Path.GetFileName(file).IndexOf("_PGROLES_", StringComparison.OrdinalIgnoreCase) >= 0;
             if (globals)
             {
-                ToolRunner.Run(Exe("psql.exe"), "-X -d postgres", Env(), null, false, file);
+                ToolRunner.Run(Exe(c, "psql.exe"), "-X -d postgres", Env(c), null, false, file);
                 return;
             }
-            if (kill) Query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" + db.Replace("'", "''") + "' AND pid <> pg_backend_pid()");
-            if (dropFirst) Query("DROP DATABASE IF EXISTS " + q);
-            if (!Exists(db)) Query("CREATE DATABASE " + q);
+            if (kill) Query(c, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '" + db.Replace("'", "''") + "' AND pid <> pg_backend_pid()");
+            if (dropFirst) Query(c, "DROP DATABASE IF EXISTS " + q);
+            if (!Exists(c, db)) Query(c, "CREATE DATABASE " + q);
             if (file.EndsWith(".dump", StringComparison.OrdinalIgnoreCase))
-                ToolRunner.Run(Exe("pg_restore.exe"), "--no-password --no-owner --exit-on-error -d " + ToolRunner.Quote(db) + " " + ToolRunner.Quote(file), Env());
+                ToolRunner.Run(Exe(c, "pg_restore.exe"), "--no-password --no-owner --exit-on-error -d " + ToolRunner.Quote(db) + " " + ToolRunner.Quote(file), Env(c));
             else
-                ToolRunner.Run(Exe("psql.exe"), "-X -v ON_ERROR_STOP=1 -d " + ToolRunner.Quote(db), Env(), null, false, file);
+                ToolRunner.Run(Exe(c, "psql.exe"), "-X -v ON_ERROR_STOP=1 -d " + ToolRunner.Quote(db), Env(c), null, false, file);
         }
     }
 
     public static class SqlPackageTool
     {
-        public static string Exe()
+        public static string Exe(ConnectionSettings c)
         {
-            return ToolRunner.Find("SqlPackage.exe", SettingsStore.Current.Connection.SqlPackagePath,
+            return ToolRunner.Find("SqlPackage.exe", c.SqlPackagePath,
                 @"Microsoft SQL Server\*\DAC\bin", @"Microsoft SQL Server Management Studio *\Common7\IDE\Extensions\Microsoft\SQLDB\DAC",
                 @"Microsoft Visual Studio\*\*\Common7\IDE\Extensions\Microsoft\SQLDB\DAC", @"sqlpackage");
         }
 
-        static string Conn(string db)
+        static string Conn(ConnectionSettings c, string db)
         {
-            var b = new System.Data.SqlClient.SqlConnectionStringBuilder(SqlOps.BuildConnString(SettingsStore.Current.Connection, db));
+            var b = new System.Data.SqlClient.SqlConnectionStringBuilder(SqlOps.BuildConnString(c, db));
             b.Remove("Application Name"); b.Remove("Pooling");
             return b.ConnectionString + ";TrustServerCertificate=True";
         }
 
-        public static void Export(string db, string file, Action<string> onLine)
+        public static void Export(ConnectionSettings c, string db, string file, Action<string> onLine)
         {
-            ToolRunner.Run(Exe(), "/a:Export /scs:" + ToolRunner.Quote(Conn(db)) + " /tf:" + ToolRunner.Quote(file), null, null, false, null, onLine);
+            ToolRunner.Run(Exe(c), "/a:Export /scs:" + ToolRunner.Quote(Conn(c, db)) + " /tf:" + ToolRunner.Quote(file), null, null, false, null, onLine);
         }
 
-        public static void Import(string db, string file, Action<string> onLine)
+        public static void Import(ConnectionSettings c, string db, string file, Action<string> onLine)
         {
-            ToolRunner.Run(Exe(), "/a:Import /tcs:" + ToolRunner.Quote(Conn(db)) + " /sf:" + ToolRunner.Quote(file), null, null, false, null, onLine);
+            ToolRunner.Run(Exe(c), "/a:Import /tcs:" + ToolRunner.Quote(Conn(c, db)) + " /sf:" + ToolRunner.Quote(file), null, null, false, null, onLine);
+        }
+    }
+
+    /// <summary>測試連線並回傳伺服器摘要；失敗會丟出例外。</summary>
+    public static class ConnTest
+    {
+        public static string Test(DbEngine e, ConnectionSettings sql, ToolConnection tool, out List<DbInfo> dbs)
+        {
+            if (e == DbEngine.SqlServer)
+            {
+                var si = SqlOps.GetServerInfo(sql);
+                dbs = SqlOps.GetDatabases(sql);
+                return si.Summary + "｜資料庫 " + dbs.Count + " 個｜服務帳戶 " + si.ServiceAccount + (si.IsExpress ? "｜Express 版不支援原生壓縮，可改用 ZIP" : "");
+            }
+            if (e == DbEngine.MySql)
+            {
+                string v = MySqlTool.Version(tool);
+                dbs = MySqlTool.Databases(tool);
+                return "MySQL " + v + "｜資料庫 " + dbs.Count + " 個｜工具 " + Path.GetDirectoryName(MySqlTool.Exe(tool, "mysqldump.exe"));
+            }
+            string pv = PgTool.Version(tool);
+            dbs = PgTool.Databases(tool);
+            return pv.Split(',')[0] + "｜資料庫 " + dbs.Count + " 個｜工具 " + Path.GetDirectoryName(PgTool.Exe(tool, "pg_dump.exe"));
         }
     }
 }

@@ -74,6 +74,15 @@ namespace SqlBackupManager
                     Logger.Write(new LogEntry { Status = LogEntry.Warning, Message = "設定檔讀取失敗，已改用預設值：" + ex.Message });
                 }
                 if (Current.Jobs == null) Current.Jobs = new List<BackupJob>();
+                // 舊版設定：連線原本是全域設定，移轉到每個工作 (需重新驗證)
+                foreach (var j in Current.Jobs)
+                {
+                    if (j.ConnSet) continue;
+                    j.SqlConn = (Current.Connection ?? new ConnectionSettings()).Copy();
+                    j.ToolConn = (j.Engine == DbEngine.PostgreSql ? Current.PgSql : Current.MySql ?? new ToolConnection()).Copy();
+                    j.ConnSet = true;
+                    j.ConnVerified = false;
+                }
             }
         }
 

@@ -53,6 +53,11 @@ namespace SqlBackupManager
             try
             {
                 Report("執行工作：" + job.Name, -1);
+                if (!job.ConnVerified)
+                {
+                    Add(res, new LogEntry { Job = job.Name, Kind = BackupJob.KindText(job.Kind), Status = LogEntry.Failed, Message = "連線尚未驗證：請到「備份工作」編輯此工作，在「連線」頁按「測試連線」成功後再儲存" });
+                    return Finish(res);
+                }
                 List<string> done = job.Engine == DbEngine.SqlServer ? RunSqlServer(res, job) : RunTool(res, job);
                 if (job.RetentionDays > 0 && done != null && !IsUrl(job.TargetPath))
                 {
@@ -74,7 +79,7 @@ namespace SqlBackupManager
         // ─────────── SQL Server ───────────
         static List<string> RunSqlServer(JobResult res, BackupJob job)
         {
-            var conn = SettingsStore.Current.Connection;
+            var conn = job.SqlConn;
             ServerInfo si;
             List<DbInfo> dbs;
             try
@@ -202,7 +207,7 @@ namespace SqlBackupManager
                     Report(label + " 0%", 0);
                     try
                     {
-                        SqlOps.ExecWithProgress(SettingsStore.Current.Connection, sql, p => Report(label + " " + p + "%", p));
+                        SqlOps.ExecWithProgress(job.SqlConn, sql, p => Report(label + " " + p + "%", p));
                         break;
                     }
                     catch (SqlException ex)
@@ -223,7 +228,7 @@ namespace SqlBackupManager
                 if (job.Verify)
                 {
                     Report(d.Name + " 驗證備份檔…", -1);
-                    SqlOps.ExecWithProgress(SettingsStore.Current.Connection,
+                    SqlOps.ExecWithProgress(job.SqlConn,
                         "RESTORE VERIFYONLY FROM " + string.Join(", ", files.Select(f => (IsUrl(f) ? "URL = " : "DISK = ") + SqlOps.S(f))) + (job.Checksum ? " WITH CHECKSUM, STATS = 25" : " WITH STATS = 25"), null);
                 }
 
@@ -280,7 +285,7 @@ namespace SqlBackupManager
                 file = Path.Combine(dir, BuildFileName(job.Engine, d.Name, BackupKind.Bacpac, job, DateTime.Now.ToString("yyyyMMdd_HHmmss"), ""));
                 string label = string.Format("[{0}/{1}] {2} BACPAC", idx, total, d.Name);
                 Report(label + "…", -1);
-                SqlPackageTool.Export(d.Name, file, line => Report(label + "：" + Short(line), -1));
+                SqlPackageTool.Export(job.SqlConn, d.Name, file, line => Report(label + "：" + Short(line), -1));
                 CopySecondary(job, d.Name, file);
                 sw.Stop();
                 Add(res, new LogEntry { Job = job.Name, Database = d.Name, Kind = kt, Status = LogEntry.Success, File = file, SizeBytes = Len(file), DurationSec = sw.Elapsed.TotalSeconds, Message = "完成（結構 + 資料，可匯入 Azure SQL / 其他版本）" });
@@ -306,7 +311,7 @@ namespace SqlBackupManager
                     string dir = job.TargetPath; Directory.CreateDirectory(dir);
                     file = Path.Combine(dir, BuildFileName(job.Engine, "server", BackupKind.Globals, job, DateTime.Now.ToString("yyyyMMdd_HHmmss"), ""));
                     Report("pg_dumpall 角色與權限…", -1);
-                    PgTool.DumpGlobals(file);
+                    PgTool.DumpGlobals(job.ToolConn, file);
                     if (!string.IsNullOrWhiteSpace(job.SecondaryPath)) { Directory.CreateDirectory(job.SecondaryPath); File.Copy(file, Path.Combine(job.SecondaryPath, Path.GetFileName(file)), true); }
                     Add(res, new LogEntry { Job = job.Name, Database = "(伺服器)", Kind = kt, Status = LogEntry.Success, File = file, SizeBytes = Len(file), DurationSec = sw.Elapsed.TotalSeconds, Message = "完成" });
                 }
@@ -315,7 +320,7 @@ namespace SqlBackupManager
             }
 
             List<DbInfo> dbs;
-            try { dbs = my ? MySqlTool.Databases() : PgTool.Databases(); }
+            try { dbs = my ? MySqlTool.Databases(job.ToolConn) : PgTool.Databases(job.ToolConn); }
             catch (Exception ex)
             {
                 Add(res, new LogEntry { Job = job.Name, Kind = kt, Status = LogEntry.Failed, Message = "無法連線 " + BackupJob.EngineText(job.Engine) + "：" + ex.Message });
@@ -336,8 +341,8 @@ namespace SqlBackupManager
                     file = Path.Combine(dir, BuildFileName(job.Engine, d.Name, BackupKind.Dump, job, DateTime.Now.ToString("yyyyMMdd_HHmmss"), ""));
                     string label = string.Format("[{0}/{1}] {2} {3}", i + 1, targets.Count, d.Name, my ? "mysqldump" : "pg_dump");
                     Report(label + "…", -1);
-                    if (my) MySqlTool.Dump(d.Name, file, job, null);
-                    else PgTool.Dump(d.Name, file, job, null);
+                    if (my) MySqlTool.Dump(job.ToolConn, d.Name, file, job, null);
+                    else PgTool.Dump(job.ToolConn, d.Name, file, job, null);
 
                     string verifyMsg = "完成";
                     if (job.Verify)
@@ -364,7 +369,7 @@ namespace SqlBackupManager
         {
             if (file.EndsWith(".dump", StringComparison.OrdinalIgnoreCase))
             {
-                string toc = ToolRunner.Run(PgTool.Exe("pg_restore.exe"), "-l " + ToolRunner.Quote(file), null);
+                string toc = PgTool.VerifyCustom(job.ToolConn, file);
                 int n = toc.Split('\n').Count(l => l.Length > 0 && !l.StartsWith(";"));
                 return "已驗證（" + n + " 個物件）";
             }
@@ -532,7 +537,7 @@ namespace SqlBackupManager
             sb.Append("<div style='font-family:Microsoft JhengHei,Segoe UI,sans-serif;font-size:14px'>");
             sb.AppendFormat("<h3 style='color:{0}'>{1}：{2}</h3>", res.Ok ? "#107C10" : "#C42B1C", res.Ok ? "備份成功" : "備份失敗", WebUtility.HtmlEncode(res.Job.Name));
             sb.AppendFormat("<p>伺服器：{0}<br/>主機：{1}<br/>時間：{2:yyyy/MM/dd HH:mm:ss}<br/>結果：{3}</p>",
-                WebUtility.HtmlEncode(SettingsStore.Current.Connection.Server), Environment.MachineName, DateTime.Now, res.Summary);
+                WebUtility.HtmlEncode(BackupJob.EngineText(res.Job.Engine) + " " + res.Job.ServerText()), Environment.MachineName, DateTime.Now, res.Summary);
             sb.Append("<table cellpadding='6' style='border-collapse:collapse;font-size:13px' border='1'><tr style='background:#f0f0f0'><th>資料庫</th><th>類型</th><th>狀態</th><th>大小</th><th>耗時</th><th>訊息</th></tr>");
             foreach (var e in res.Entries)
                 sb.AppendFormat("<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>",

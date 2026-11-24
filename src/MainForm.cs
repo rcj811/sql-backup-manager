@@ -1,8 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -13,32 +13,40 @@ namespace SqlBackupManager
         readonly List<Page> pages = new List<Page>();
         readonly List<NavItem> navs = new List<NavItem>();
         Page current;
-        Label lblTitle = new Label { AutoSize = true };
-        Label lblConn = new Label { AutoSize = true };
-        Label lblSched = new Label { AutoSize = true };
-        ToolStripStatusLabel stText = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
-        ToolStripProgressBar stBar = new ToolStripProgressBar { Width = 180, Visible = false };
-        ToolStripStatusLabel stRight = new ToolStripStatusLabel();
-        NotifyIcon tray = new NotifyIcon();
+        readonly Label lblTitle = new Label { AutoSize = true, UseMnemonic = false };
+        readonly Label lblConn = new Label { AutoSize = true, UseMnemonic = false };
+        readonly Label lblSched = new Label { AutoSize = true, UseMnemonic = false };
+        readonly ToolStripStatusLabel stText = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+        readonly ToolStripProgressBar stBar = new ToolStripProgressBar { Visible = false };
+        readonly ToolStripStatusLabel stRight = new ToolStripStatusLabel();
+        readonly NotifyIcon tray = new NotifyIcon();
         ToolStripMenuItem miPause;
         Scheduler scheduler;
-        System.Windows.Forms.Timer uiTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+        readonly Timer uiTimer = new Timer { Interval = 1500 };
+        readonly Timer connTimer = new Timer { Interval = 10 * 60 * 1000 };
         volatile bool dirty;
         bool exiting, startHidden, balloonShown;
-        Icon iconOk, iconFail, iconIdle;
+        readonly Icon iconOk, iconFail, iconIdle;
+        Action<string, int> onProgress;
+        Action<JobResult> onFinished;
+        Action<LogEntry> onLog;
 
-        public ServerInfo Server;
-        public string ServerError;
-        public int DatabaseCount;
+        /// <summary>各工作最近一次連線檢查結果 (工作 Id → 文字，✔ 開頭 = 正常)。</summary>
+        public readonly ConcurrentDictionary<string, string> ConnStatus = new ConcurrentDictionary<string, string>();
+
+        /// <summary>變更字體後由 Program 重新建立主視窗。</summary>
+        public bool RebuildRequested;
 
         public MainForm(bool startMinimized)
         {
             startHidden = startMinimized || SettingsStore.Current.General.StartMinimized;
             Text = "SQL 備份管理";
+            AutoScaleMode = AutoScaleMode.None;
             Font = Theme.F(9.5f);
             BackColor = Theme.Page;
-            Size = new Size(1320, 840);
-            MinimumSize = new Size(1120, 720);
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            Size = new Size(Math.Min(wa.Width, Theme.S(1320)), Math.Min(wa.Height, Theme.S(840)));
+            MinimumSize = new Size(Math.Min(wa.Width, Theme.S(1000)), Math.Min(wa.Height, Theme.S(640)));
             StartPosition = FormStartPosition.CenterScreen;
             iconIdle = Theme.MakeIcon(Color.Empty);
             iconOk = Theme.MakeIcon(Color.FromArgb(46, 160, 67));
@@ -47,27 +55,31 @@ namespace SqlBackupManager
             Theme.DoubleBuffer(this);
 
             // ── 側邊欄
-            var side = new Panel { Dock = DockStyle.Left, Width = 228, BackColor = Theme.Sidebar };
-            var logo = new Panel { Dock = DockStyle.Top, Height = 92, BackColor = Theme.Sidebar };
+            var side = new Panel { Dock = DockStyle.Left, Width = Theme.S(228), BackColor = Theme.Sidebar };
+            var fLogo = Theme.F(13f, FontStyle.Bold); var fSub = Theme.F(8.5f);
+            int hLogo = TextRenderer.MeasureText("國", fLogo).Height, hSub = TextRenderer.MeasureText("A", fSub).Height;
+            var logo = new Panel { Dock = DockStyle.Top, Height = hLogo + hSub + Theme.S(46), BackColor = Theme.Sidebar };
             logo.Paint += (s, e) =>
             {
-                e.Graphics.DrawIcon(iconIdle, new Rectangle(22, 28, 34, 34));
-                using (var f = Theme.F(13f, FontStyle.Bold)) TextRenderer.DrawText(e.Graphics, "SQL 備份管理", f, new Point(64, 26), Color.White);
-                using (var f = Theme.F(8.5f)) TextRenderer.DrawText(e.Graphics, "Backup & Restore Manager", f, new Point(66, 52), Theme.SidebarText, TextFormatFlags.NoPrefix);
+                int iy = (logo.Height - Theme.S(34)) / 2;
+                e.Graphics.DrawIcon(iconIdle, new Rectangle(Theme.S(20), iy, Theme.S(34), Theme.S(34)));
+                int tx = Theme.S(64), ty = (logo.Height - hLogo - hSub) / 2;
+                TextRenderer.DrawText(e.Graphics, "SQL 備份管理", fLogo, new Point(tx, ty), Color.White, TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(e.Graphics, "Backup & Restore Manager", fSub, new Point(tx + Theme.S(2), ty + hLogo), Theme.SidebarText, TextFormatFlags.NoPrefix);
             };
-            var navHost = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Sidebar, Padding = new Padding(0, 8, 0, 0) };
-            var ver = new Label { Dock = DockStyle.Bottom, Height = 54, ForeColor = Color.FromArgb(120, 132, 150), Font = Theme.F(8.5f), Padding = new Padding(22, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
+            var navHost = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Sidebar, Padding = new Padding(0, Theme.S(8), 0, 0) };
+            var verFont = Theme.F(8.5f);
+            var ver = new Label { Dock = DockStyle.Bottom, Height = TextRenderer.MeasureText("A\nA", verFont).Height + Theme.S(20), ForeColor = Color.FromArgb(120, 132, 150), Font = verFont, Padding = new Padding(Theme.S(22), 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false,
                 Text = "v" + Application.ProductVersion + "\n" + Environment.MachineName };
 
             pages.Add(new DashboardPage(this));
             pages.Add(new JobsPage(this));
             pages.Add(new RestorePage(this));
             pages.Add(new LogPage(this));
-            pages.Add(new ConnectionPage(this));
             pages.Add(new NotifyPage(this));
             pages.Add(new SystemPage(this));
-            string[] glyphs = { "", "", "", "", "", "", "" };
-            string[] names = { "總覽", "備份工作", "還原資料庫", "備份日誌", "連線設定", "通知設定", "系統設定" };
+            string[] glyphs = { "", "", "", "", "", "" };
+            string[] names = { "總覽", "備份工作", "還原資料庫", "備份日誌", "通知設定", "系統設定" };
             for (int i = names.Length - 1; i >= 0; i--)
             {
                 var n = new NavItem(names[i], glyphs[i]);
@@ -78,25 +90,29 @@ namespace SqlBackupManager
             }
             side.Controls.Add(navHost); side.Controls.Add(ver); side.Controls.Add(logo);
 
-            // ── 標題列
-            var header = new Panel { Dock = DockStyle.Top, Height = 66, BackColor = Color.White };
-            lblTitle.Font = Theme.F(16f, FontStyle.Bold); lblTitle.ForeColor = Theme.Text; lblTitle.Location = new Point(24, 16);
-            header.Controls.Add(lblTitle);
-            var chips = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, Width = 760, Padding = new Padding(0, 22, 20, 0), BackColor = Color.White, WrapContents = false };
+            // ── 標題列 (左標題、右狀態，用 TableLayout 自動排版不會互蓋)
+            lblTitle.Font = Theme.F(16f, FontStyle.Bold); lblTitle.ForeColor = Theme.Text;
             lblConn.Font = lblSched.Font = Theme.F(9.5f);
-            lblConn.Margin = new Padding(18, 0, 0, 0);
-            lblSched.Cursor = Cursors.Hand;
-            lblSched.Click += (s, e) => TogglePause();
-            chips.Controls.Add(lblConn); chips.Controls.Add(lblSched);
-            header.Controls.Add(chips);
-            header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Theme.Border });
+            lblSched.Cursor = Cursors.Hand; lblSched.Click += (s, e) => TogglePause();
+            lblConn.Cursor = Cursors.Hand; lblConn.Click += (s, e) => ShowPage(0);
+            var header = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 3, RowCount = 1, BackColor = Color.White, Padding = new Padding(Theme.S(24), 0, Theme.S(20), 0) };
+            header.Height = TextRenderer.MeasureText("國", lblTitle.Font).Height + Theme.S(30);
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            lblTitle.Anchor = AnchorStyles.Left; lblSched.Anchor = AnchorStyles.Right; lblConn.Anchor = AnchorStyles.Right;
+            lblSched.Margin = new Padding(Theme.S(12), 0, Theme.S(18), 0);
+            header.Controls.Add(lblTitle, 0, 0); header.Controls.Add(lblSched, 1, 0); header.Controls.Add(lblConn, 2, 0);
+            var headerLine = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Theme.Border };
 
             var content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Page };
             foreach (var p in pages) content.Controls.Add(p);
             var right = new Panel { Dock = DockStyle.Fill };
-            right.Controls.Add(content); right.Controls.Add(header);
+            right.Controls.Add(content); right.Controls.Add(headerLine); right.Controls.Add(header);
 
             var status = new StatusStrip { BackColor = Color.White, SizingGrip = true, Font = Theme.F(9f) };
+            stBar.Size = new Size(Theme.S(180), Theme.S(16));
             stRight.Text = "資料位置：" + AppPaths.DataDir;
             stRight.ForeColor = Theme.SubText;
             status.Items.AddRange(new ToolStripItem[] { stText, stBar, stRight });
@@ -121,22 +137,24 @@ namespace SqlBackupManager
             tray.DoubleClick += (s, e) => ShowFromTray();
             tray.BalloonTipClicked += (s, e) => { ShowFromTray(); ShowPage(3); };
 
-            // ── 事件
-            BackupEngine.Progress += (msg, pct) => SetStatus(msg, pct);
-            BackupEngine.JobFinished += r => Invoke2(() => OnJobFinished(r));
-            Logger.EntryAdded += e => dirty = true;
-            uiTimer.Tick += (s, e) =>
-            {
-                if (dirty && current != null && Visible) { dirty = false; current.RefreshData(); }
-            };
+            // ── 事件 (重建視窗時要解除，避免重複)
+            onProgress = (msg, pct) => SetStatus(msg, pct);
+            onFinished = r => Invoke2(() => OnJobFinished(r));
+            onLog = e => dirty = true;
+            BackupEngine.Progress += onProgress;
+            BackupEngine.JobFinished += onFinished;
+            Logger.EntryAdded += onLog;
+            uiTimer.Tick += (s, e) => { if (dirty && current != null && Visible) { dirty = false; current.RefreshData(); } };
             uiTimer.Start();
+            connTimer.Tick += (s, e) => CheckConnections();
+            connTimer.Start();
 
             scheduler = new Scheduler();
             scheduler.Changed += () => dirty = true;
 
             ShowPage(0);
             UpdateSchedLabel();
-            RefreshServerInfo();
+            CheckConnections();
             Logger.Cleanup(SettingsStore.Current.General.LogRetentionDays);
         }
 
@@ -154,10 +172,7 @@ namespace SqlBackupManager
 
         public void ShowPage(int idx)
         {
-            for (int i = 0; i < pages.Count; i++)
-            {
-                navs[i].Selected = i == idx; navs[i].Invalidate();
-            }
+            for (int i = 0; i < pages.Count; i++) { navs[i].Selected = i == idx; navs[i].Invalidate(); }
             current = pages[idx];
             current.RefreshData();
             current.Visible = true;
@@ -190,44 +205,46 @@ namespace SqlBackupManager
             return n == null ? "無排程" : "下次 " + n.NextRun.Value.ToString("MM/dd HH:mm");
         }
 
-        public void RefreshServerInfo()
+        /// <summary>在背景檢查每個工作的連線 (相同伺服器只測一次)。</summary>
+        public void CheckConnections()
         {
-            lblConn.ForeColor = Theme.SubText;
-            lblConn.Text = "● 連線中…  " + SettingsStore.Current.Connection.Server;
+            var jobs = SettingsStore.Current.Jobs.ToList();
+            UpdateConnLabel();
+            if (jobs.Count == 0) return;
+            foreach (var j in jobs) if (j.ConnVerified) ConnStatus[j.Id] = "檢查中…";
+            dirty = true;
             Task.Run(() =>
             {
-                try
+                var cache = new Dictionary<string, string>();
+                foreach (var j in jobs.Where(x => x.ConnVerified))
                 {
-                    var si = SqlOps.GetServerInfo(SettingsStore.Current.Connection);
-                    int count = SqlOps.GetDatabases(SettingsStore.Current.Connection).Count;
-                    Invoke2(() =>
+                    string st;
+                    if (!cache.TryGetValue(j.ConnKey, out st))
                     {
-                        Server = si; ServerError = null; DatabaseCount = count;
-                        lblConn.ForeColor = Theme.Success;
-                        lblConn.Text = "● " + SettingsStore.Current.Connection.Server + "　" + ShortEdition(si);
-                        if (current != null) current.RefreshData();
-                    });
+                        try
+                        {
+                            List<DbInfo> dbs;
+                            st = "✔ " + ConnTest.Test(j.Engine, j.SqlConn, j.ToolConn, out dbs).Split('｜')[0] + "（" + DateTime.Now.ToString("HH:mm") + "）";
+                        }
+                        catch (Exception ex) { st = "✖ " + ex.Message.Split('\n')[0]; }
+                        cache[j.ConnKey] = st;
+                    }
+                    ConnStatus[j.Id] = st;
                 }
-                catch (Exception ex)
-                {
-                    Invoke2(() =>
-                    {
-                        Server = null; ServerError = "無法連線：" + ex.Message;
-                        lblConn.ForeColor = Theme.Danger;
-                        lblConn.Text = "● SQL Server 未連線（" + SettingsStore.Current.Connection.Server + "）";
-                        if (current != null) current.RefreshData();
-                    });
-                }
+                dirty = true;
+                Invoke2(UpdateConnLabel);
             });
         }
 
-        static string ShortEdition(ServerInfo si)
+        void UpdateConnLabel()
         {
-            string e = si.Edition.Split('(')[0].Trim();
-            string v = si.Version.Split('.')[0];
-            string year;
-            switch (v) { case "10": year = "2008"; break; case "11": year = "2012"; break; case "12": year = "2014"; break; case "13": year = "2016"; break; case "14": year = "2017"; break; case "15": year = "2019"; break; case "16": year = "2022"; break; case "17": year = "2025"; break; default: year = v; break; }
-            return "SQL Server " + year + " " + e;
+            var jobs = SettingsStore.Current.Jobs;
+            int total = jobs.Count, unverified = jobs.Count(j => !j.ConnVerified);
+            int fail = jobs.Count(j => { string s; return j.ConnVerified && ConnStatus.TryGetValue(j.Id, out s) && s.StartsWith("✖"); });
+            if (total == 0) { lblConn.ForeColor = Theme.SubText; lblConn.Text = "● 尚未建立備份工作"; }
+            else if (fail > 0) { lblConn.ForeColor = Theme.Danger; lblConn.Text = "● " + fail + " 個工作無法連線"; }
+            else if (unverified > 0) { lblConn.ForeColor = Theme.Warning; lblConn.Text = "● " + unverified + " 個工作連線未驗證"; }
+            else { lblConn.ForeColor = Theme.Success; lblConn.Text = "● 全部 " + total + " 個工作連線正常"; }
         }
 
         void UpdateSchedLabel()
@@ -253,6 +270,11 @@ namespace SqlBackupManager
         public void RunJobs(List<BackupJob> jobs)
         {
             if (jobs.Count == 0) { MessageBox.Show("沒有可執行的工作。", "備份", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+            var bad = jobs.Where(j => !j.ConnVerified).ToList();
+            if (bad.Count > 0)
+                MessageBox.Show("以下工作的連線尚未驗證，不會執行：\n\n" + string.Join("\n", bad.Select(j => "• " + j.Name)) + "\n\n請編輯工作並「測試連線」成功後再儲存。", "備份", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            jobs = jobs.Where(j => j.ConnVerified).ToList();
+            if (jobs.Count == 0) return;
             if (BackupEngine.Busy) SetStatus("已加入佇列，等待目前作業完成…", -1);
             Task.Run(() =>
             {
@@ -299,6 +321,19 @@ namespace SqlBackupManager
             }
         }
 
+        /// <summary>變更字體後重新建立視窗 (排程不中斷太久，設定已存檔)。</summary>
+        public void RebuildUi()
+        {
+            if (BackupEngine.Busy)
+            {
+                MessageBox.Show("目前有備份/還原正在進行，字體會在下次開啟程式時套用。", "字體大小", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            RebuildRequested = true;
+            exiting = true;
+            Close();
+        }
+
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
@@ -316,7 +351,12 @@ namespace SqlBackupManager
             if (!exiting && e.CloseReason == CloseReason.UserClosing && !ConfirmExit()) { e.Cancel = true; return; }
             exiting = true;
             tray.Visible = false;
+            tray.Dispose();
+            uiTimer.Stop(); connTimer.Stop();
             scheduler.Dispose();
+            BackupEngine.Progress -= onProgress;
+            BackupEngine.JobFinished -= onFinished;
+            Logger.EntryAdded -= onLog;
             base.OnFormClosing(e);
         }
 

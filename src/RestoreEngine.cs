@@ -39,6 +39,8 @@ namespace SqlBackupManager
         public bool LeaveRestoring = false;  // 保持 NORECOVERY 以便之後繼續套用記錄
         public DateTime? StopAt;
         public bool TailLog;                 // 覆寫前先做尾端記錄備份並套用 (還原到最新狀態)
+        public ConnectionSettings SqlConn;   // 還原到哪一台 SQL Server
+        public ToolConnection ToolConn;      // MySQL / PostgreSQL 連線
     }
 
     public static class RestoreEngine
@@ -57,7 +59,7 @@ namespace SqlBackupManager
         }
 
         /// <summary>掃描資料夾內的備份檔 (含子資料夾)。本程式產生的檔名直接解析；其他 .bak/.trn 會讀取檔頭。</summary>
-        public static List<BackupItem> Scan(string folder, Action<string> status)
+        public static List<BackupItem> Scan(string folder, ConnectionSettings conn, Action<string> status)
         {
             var list = new List<BackupItem>();
             if (!Directory.Exists(folder)) return list;
@@ -109,7 +111,8 @@ namespace SqlBackupManager
                 else if (fi.Extension.Equals(".bak", StringComparison.OrdinalIgnoreCase) || fi.Extension.Equals(".trn", StringComparison.OrdinalIgnoreCase))
                 {
                     if (status != null) status("讀取檔頭：" + fi.Name);
-                    try { list.AddRange(FromHeaders(f)); }
+                    if (conn == null) continue;
+                    try { list.AddRange(FromHeaders(conn, f)); }
                     catch { /* 不是有效的備份檔 */ }
                 }
                 else if (fi.Extension.Equals(".bacpac", StringComparison.OrdinalIgnoreCase))
@@ -120,10 +123,10 @@ namespace SqlBackupManager
             return list.OrderBy(x => x.Database).ThenBy(x => x.Time).ToList();
         }
 
-        public static List<BackupItem> FromHeaders(string file)
+        public static List<BackupItem> FromHeaders(ConnectionSettings conn, string file)
         {
             var res = new List<BackupItem>();
-            var hs = SqlOps.ReadHeaders(SettingsStore.Current.Connection, file);
+            var hs = SqlOps.ReadHeaders(conn, file);
             for (int i = 0; i < hs.Count; i++)
             {
                 var h = hs[i];
@@ -179,12 +182,12 @@ namespace SqlBackupManager
                 if (first.Kind == BackupKind.Globals)
                 {
                     BackupEngine.Report("還原角色與權限…", -1);
-                    PgTool.Restore("postgres", first.File, false, false);
+                    PgTool.Restore(plan.ToolConn, "postgres", first.File, false, false);
                 }
                 else
                 {
-                    bool exists = first.Engine == DbEngine.SqlServer ? SqlOps.DatabaseExists(SettingsStore.Current.Connection, db)
-                                : first.Engine == DbEngine.MySql ? MySqlTool.Exists(db) : PgTool.Exists(db);
+                    bool exists = first.Engine == DbEngine.SqlServer ? SqlOps.DatabaseExists(plan.SqlConn, db)
+                                : first.Engine == DbEngine.MySql ? MySqlTool.Exists(plan.ToolConn, db) : PgTool.Exists(plan.ToolConn, db);
                     if (exists && !plan.Overwrite)
                         throw new InvalidOperationException("資料庫 " + db + " 已存在。若要覆寫請勾選「覆寫現有資料庫」，或改用新的資料庫名稱。");
 
@@ -197,17 +200,17 @@ namespace SqlBackupManager
                         if (first.Engine == DbEngine.SqlServer)
                         {
                             safety = Path.Combine(dir, BackupEngine.SafeName(db) + "_PRE-RESTORE_" + stamp + ".bak");
-                            SqlOps.ExecWithProgress(SettingsStore.Current.Connection, "BACKUP DATABASE " + SqlOps.Q(db) + " TO DISK = " + SqlOps.S(safety) + " WITH COPY_ONLY, INIT, STATS = 10", null);
+                            SqlOps.ExecWithProgress(plan.SqlConn, "BACKUP DATABASE " + SqlOps.Q(db) + " TO DISK = " + SqlOps.S(safety) + " WITH COPY_ONLY, INIT, STATS = 10", null);
                         }
                         else if (first.Engine == DbEngine.MySql)
                         {
                             safety = Path.Combine(dir, BackupEngine.SafeName(db) + "_PRE-RESTORE_" + stamp + ".sql.gz");
-                            MySqlTool.Dump(db, safety, new BackupJob(), null);
+                            MySqlTool.Dump(plan.ToolConn, db, safety, new BackupJob(), null);
                         }
                         else
                         {
                             safety = Path.Combine(dir, BackupEngine.SafeName(db) + "_PRE-RESTORE_" + stamp + ".dump");
-                            PgTool.Dump(db, safety, new BackupJob { PgCustomFormat = true }, null);
+                            PgTool.Dump(plan.ToolConn, db, safety, new BackupJob { PgCustomFormat = true }, null);
                         }
                         Logger.Write(new LogEntry { Job = "還原", Database = db, Kind = "還原前備份", Status = LogEntry.Success, File = safety, SizeBytes = SafeLen(safety), Message = "覆寫前的安全備份" });
                     }
@@ -217,14 +220,14 @@ namespace SqlBackupManager
                     {
                         if (exists)
                         {
-                            var conn = SettingsStore.Current.Connection;
+                            var conn = plan.SqlConn;
                             if (plan.KillConnections) try { SqlOps.Exec(conn, "ALTER DATABASE " + SqlOps.Q(db) + " SET SINGLE_USER WITH ROLLBACK IMMEDIATE"); } catch { }
                             SqlOps.Exec(conn, "DROP DATABASE " + SqlOps.Q(db));
                         }
-                        SqlPackageTool.Import(db, first.File, line => BackupEngine.Report(how + "：" + (line.Length > 60 ? line.Substring(0, 60) : line), -1));
+                        SqlPackageTool.Import(plan.SqlConn, db, first.File, line => BackupEngine.Report(how + "：" + (line.Length > 60 ? line.Substring(0, 60) : line), -1));
                     }
-                    else if (first.Engine == DbEngine.MySql) MySqlTool.Restore(db, first.File, exists);
-                    else PgTool.Restore(db, first.File, exists, plan.KillConnections);
+                    else if (first.Engine == DbEngine.MySql) MySqlTool.Restore(plan.ToolConn, db, first.File, exists);
+                    else PgTool.Restore(plan.ToolConn, db, first.File, exists, plan.KillConnections);
                 }
                 sw.Stop();
                 Logger.Write(new LogEntry { Job = "還原", Database = first.Kind == BackupKind.Globals ? "(伺服器)" : db, Kind = how, Status = LogEntry.Success, File = first.File, DurationSec = sw.Elapsed.TotalSeconds, Message = "還原完成" });
@@ -245,7 +248,7 @@ namespace SqlBackupManager
 
         static void ExecuteNative(RestorePlan plan)
         {
-            var conn = SettingsStore.Current.Connection;
+            var conn = plan.SqlConn;
             string db = plan.TargetDb.Trim();
             string[] sys = { "master", "model", "msdb", "tempdb" };
             if (sys.Contains(db, StringComparer.OrdinalIgnoreCase))
