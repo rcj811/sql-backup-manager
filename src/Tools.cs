@@ -153,9 +153,13 @@ namespace SqlBackupManager
             finally { try { File.Delete(f); } catch { } }
         }
 
+        /// <summary>SQL 用 UTF-8 檔案經標準輸入傳入 (命令列參數在 Windows 會把中文轉壞)。</summary>
         public static string Query(ToolConnection c, string sql)
         {
-            return WithDefaults(c, d => ToolRunner.Run(Exe(c, "mysql.exe"), d + " -N -B -e " + ToolRunner.Quote(sql), null));
+            string f = Path.Combine(Path.GetTempPath(), "sbm_" + Guid.NewGuid().ToString("N") + ".sql");
+            File.WriteAllText(f, sql, new UTF8Encoding(false));
+            try { return WithDefaults(c, d => ToolRunner.Run(Exe(c, "mysql.exe"), d + " --default-character-set=utf8mb4 -N -B", null, null, false, f)); }
+            finally { try { File.Delete(f); } catch { } }
         }
 
         public static string Version(ToolConnection c) { return Query(c, "SELECT VERSION()").Trim(); }
@@ -198,9 +202,13 @@ namespace SqlBackupManager
             return new Dictionary<string, string> { { "PGPASSWORD", c.Password }, { "PGHOST", c.Host }, { "PGPORT", c.Port.ToString() }, { "PGUSER", c.User }, { "PGCLIENTENCODING", "UTF8" } };
         }
 
+        /// <summary>SQL 寫成 UTF-8 檔案用 -f 執行 (命令列參數在 Windows 會把中文轉壞)。</summary>
         public static string Query(ToolConnection c, string sql, string db = "postgres")
         {
-            return ToolRunner.Run(Exe(c, "psql.exe"), "-X -A -t -v ON_ERROR_STOP=1 -d " + ToolRunner.Quote(db) + " -c " + ToolRunner.Quote(sql), Env(c));
+            string f = Path.Combine(Path.GetTempPath(), "sbm_" + Guid.NewGuid().ToString("N") + ".sql");
+            File.WriteAllText(f, sql, new UTF8Encoding(false));
+            try { return ToolRunner.Run(Exe(c, "psql.exe"), "-X -A -t -q -v ON_ERROR_STOP=1 -d " + ToolRunner.Quote(db) + " -f " + ToolRunner.Quote(f), Env(c)); }
+            finally { try { File.Delete(f); } catch { } }
         }
 
         public static string Version(ToolConnection c) { return Query(c, "SELECT version()").Trim(); }

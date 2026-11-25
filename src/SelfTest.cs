@@ -339,7 +339,7 @@ namespace SqlBackupManager
                 {
                     PgTool.Query(pg, "DROP DATABASE IF EXISTS sbmpg"); PgTool.Query(pg, "DROP DATABASE IF EXISTS sbmpg_r");
                     PgTool.Query(pg, "CREATE DATABASE sbmpg");
-                    PgTool.Query(pg, "CREATE TABLE t(id serial primary key, v text); INSERT INTO t(v) SELECT md5(i::text) FROM generate_series(1,123) i;", "sbmpg");
+                    PgTool.Query(pg, "CREATE TABLE t(id serial primary key, v text); INSERT INTO t(v) SELECT md5(i::text) FROM generate_series(1,122) i; INSERT INTO t(v) VALUES ('中文測試');", "sbmpg");
                     var j = new BackupJob { Name = "PG 測試", Engine = DbEngine.PostgreSql, Kind = BackupKind.Dump, ToolConn = pg, ConnSet = true, ConnVerified = true, AllUserDatabases = false, Databases = new List<string> { "sbmpg" }, TargetPath = Path.Combine(outDir, "pg"), Verify = true };
                     var r = BackupEngine.RunJob(j);
                     Assert(r.Ok, string.Join(" / ", r.Entries.Where(e => e.Status == LogEntry.Failed).Select(e => e.Message)));
@@ -347,7 +347,9 @@ namespace SqlBackupManager
                     RestoreEngine.Execute(new RestorePlan { Chain = new List<BackupItem> { it }, TargetDb = "sbmpg_r", ToolConn = pg });
                     string n = PgTool.Query(pg, "SELECT count(*) FROM t", "sbmpg_r").Trim();
                     Assert(n == "123", "還原後筆數 " + n);
-                    return r.Entries.Last(e => e.Status == LogEntry.Success).Message + "｜還原後 123 筆正確";
+                    string zh = PgTool.Query(pg, "SELECT v FROM t WHERE id = 123", "sbmpg_r").Trim();
+                    Assert(zh == "中文測試", "中文內容不符：" + zh);
+                    return r.Entries.Last(e => e.Status == LogEntry.Success).Message + "｜還原後 123 筆正確（含中文）";
                 });
                 Check("PostgreSQL：角色與權限 (pg_dumpall)", () =>
                 {
