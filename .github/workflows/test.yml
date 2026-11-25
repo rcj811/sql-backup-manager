@@ -1,0 +1,114 @@
+name: Test (Windows 實機測試)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet build SqlBackupManager.csproj -c Release -o out
+
+      - name: 安裝 SQL Server Express
+        shell: pwsh
+        run: |
+          choco install sql-server-express -y --no-progress
+          Get-Service 'MSSQL$SQLEXPRESS' | Format-Table -AutoSize
+          Start-Service 'MSSQL$SQLEXPRESS' -ErrorAction SilentlyContinue
+
+      - name: 準備 PostgreSQL / MySQL (有就測)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $pg = Get-Service postgresql* -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($pg) {
+            Set-Service $pg.Name -StartupType Manual; Start-Service $pg.Name
+            $bin = $env:PGBIN; if (-not $bin) { $bin = Join-Path $env:PGROOT 'bin' }
+            "SBM_PG_BIN=$bin" | Out-File $env:GITHUB_ENV -Append
+            "SBM_PG_PWD=root" | Out-File $env:GITHUB_ENV -Append
+            Write-Host "PostgreSQL: $($pg.Name) $bin"
+          }
+          choco install mysql -y --no-progress
+          $my = Get-ChildItem 'C:\tools\mysql' -Recurse -Filter mysqldump.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $my) { $my = Get-ChildItem 'C:\Program Files\MySQL' -Recurse -Filter mysqldump.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          if ($my) {
+            Get-Service mysql* -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue
+            "SBM_MYSQL_BIN=$($my.DirectoryName)" | Out-File $env:GITHUB_ENV -Append
+            Write-Host "MySQL: $($my.DirectoryName)"
+          }
+
+      - name: 建立需要帳號密碼的網路分享 (模擬 NAS)
+        shell: pwsh
+        run: |
+          $pwd = 'Nas#' + [guid]::NewGuid().ToString('N').Substring(0,10)
+          New-LocalUser -Name nasuser -Password (ConvertTo-SecureString $pwd -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          New-Item -ItemType Directory -Force C:\nas\backup | Out-Null
+          icacls C:\nas /inheritance:r /grant "nasuser:(OI)(CI)F" /grant "*S-1-5-32-544:(OI)(CI)F" /grant "*S-1-5-18:(OI)(CI)F" | Out-Null
+          New-SmbShare -Name nas -Path C:\nas -FullAccess nasuser | Out-Null
+          "SBM_NAS=\\127.0.0.1\nas" | Out-File $env:GITHUB_ENV -Append
+          "SBM_NAS_USER=$env:COMPUTERNAME\nasuser" | Out-File $env:GITHUB_ENV -Append
+          "SBM_NAS_PWD=$pwd" | Out-File $env:GITHUB_ENV -Append
+          Get-SmbShareAccess nas | Format-Table -AutoSize
+
+      - name: 功能測試 (備份 / 還原 / NAS / 命令列)
+        id: func
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $p = Start-Process out\SqlBackupManager.exe -ArgumentList '--selftest','C:\sbmtest' -Wait -PassThru
+          Get-Content C:\sbmtest\progress.log -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: 介面測試 (10pt / 14pt 截圖與重疊檢查)
+        id: ui
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $p = Start-Process out\SqlBackupManager.exe -ArgumentList '--selftest-ui','C:\sbmui' -Wait -PassThru
+          Get-Content C:\sbmui\progress.log -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: 測試報告
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force results\ui | Out-Null
+          if (Test-Path C:\sbmtest\report.md) { Copy-Item C:\sbmtest\report.md results\report-func.md; Get-Content C:\sbmtest\report.md | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+          if (Test-Path C:\sbmui\report.md) { Copy-Item C:\sbmui\report.md results\report-ui.md; Get-Content C:\sbmui\report.md | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+          Copy-Item C:\sbmui\*.png results\ui\ -ErrorAction SilentlyContinue
+          Copy-Item C:\ProgramData\SqlBackupManager\logs\*.log results\ -ErrorAction SilentlyContinue
+          "run: $env:GITHUB_RUN_NUMBER  commit: $env:GITHUB_SHA  func: ${{ steps.func.outcome }}  ui: ${{ steps.ui.outcome }}" | Out-File results\status.txt -Encoding utf8
+
+      - name: 上傳測試結果到 test-results 分支
+        if: always()
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          Copy-Item results $env:RUNNER_TEMP\results -Recurse
+          git checkout --orphan test-results
+          git rm -rf . -q
+          Remove-Item * -Recurse -Force -Exclude .git -ErrorAction SilentlyContinue
+          Copy-Item $env:RUNNER_TEMP\results\* . -Recurse
+          git add -A
+          git commit -q -m "測試結果 #$env:GITHUB_RUN_NUMBER ($env:GITHUB_SHA)"
+          git push -f origin test-results
+
+      - name: 判定
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.func.outcome }}' -ne 'success' -or '${{ steps.ui.outcome }}' -ne 'success') { Write-Error "測試未全部通過"; exit 1 }

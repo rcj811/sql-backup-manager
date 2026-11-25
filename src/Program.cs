@@ -24,6 +24,14 @@ namespace SqlBackupManager
         {
             SettingsStore.Load();
 
+            // 自動測試 (GitHub Actions)
+            int ti = Array.FindIndex(args, x => x.Equals("--selftest", StringComparison.OrdinalIgnoreCase) || x.Equals("--selftest-ui", StringComparison.OrdinalIgnoreCase));
+            if (ti >= 0)
+            {
+                string dir = ti + 1 < args.Length ? args[ti + 1] : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sbm_selftest");
+                return args[ti].Equals("--selftest-ui", StringComparison.OrdinalIgnoreCase) ? SelfTest.RunUi(dir) : SelfTest.Run(dir);
+            }
+
             // 命令列模式：給 Windows 工作排程器使用，不顯示畫面
             int ri = Array.FindIndex(args, a => a.Equals("--run", StringComparison.OrdinalIgnoreCase));
             bool runAll = args.Any(a => a.Equals("--run-all", StringComparison.OrdinalIgnoreCase));
