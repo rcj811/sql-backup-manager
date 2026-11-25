@@ -194,6 +194,8 @@ namespace SqlBackupManager
                     if (exists && plan.SafetyBackup)
                     {
                         string dir = string.IsNullOrWhiteSpace(plan.SafetyBackupDir) ? Path.GetDirectoryName(first.File) : plan.SafetyBackupDir;
+                        if (first.Engine == DbEngine.SqlServer && (NetPath.IsNetwork(dir) || BackupEngine.IsUrl(dir))) dir = BackupEngine.StageDir(SqlOps.GetServerInfo(plan.SqlConn), "safety");
+                        BackupEngine.EnsureDir(first.Engine == DbEngine.SqlServer ? plan.SqlConn : null, dir);
                         string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                         BackupEngine.Report("還原前備份現有 " + db + "…", -1);
                         string safety;
@@ -347,7 +349,7 @@ namespace SqlBackupManager
                 // 3. 還原前先備份現有資料庫
                 if (exists && plan.SafetyBackup)
                 {
-                    string dir = string.IsNullOrWhiteSpace(plan.SafetyBackupDir) ? si.DefaultBackupPath : plan.SafetyBackupDir;
+                    string dir = SafeDir(plan, si);
                     string safety = Path.Combine(dir, BackupEngine.SafeName(db) + "_PRE-RESTORE_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".bak");
                     BackupEngine.Report("還原前備份現有 " + db + "…", 0);
                     SqlOps.ExecWithProgress(conn, "BACKUP DATABASE " + SqlOps.Q(db) + " TO DISK = " + SqlOps.S(safety) + " WITH COPY_ONLY, INIT, STATS = 5",
@@ -369,7 +371,7 @@ namespace SqlBackupManager
                 // 4b. 尾端記錄備份 (Tail-log)：把最後一次記錄備份之後的交易也保留下來
                 if (exists && plan.TailLog)
                 {
-                    string dir = string.IsNullOrWhiteSpace(plan.SafetyBackupDir) ? si.DefaultBackupPath : plan.SafetyBackupDir;
+                    string dir = SafeDir(plan, si);
                     string tail = Path.Combine(dir, BackupEngine.SafeName(db) + "_TAIL_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".trn");
                     BackupEngine.Report("尾端記錄備份 " + db + "…", -1);
                     SqlOps.ExecWithProgress(conn, "BACKUP LOG " + SqlOps.Q(db) + " TO DISK = " + SqlOps.S(tail) + " WITH NORECOVERY, INIT, STATS = 10", null);
@@ -425,6 +427,15 @@ namespace SqlBackupManager
                 BackupEngine.Gate.Release();
                 BackupEngine.Report("就緒", 0);
             }
+        }
+
+        /// <summary>覆寫前安全備份 / 尾端記錄的存放資料夾 (網路路徑改放本機，並確保資料夾存在)。</summary>
+        static string SafeDir(RestorePlan plan, ServerInfo si)
+        {
+            string dir = plan.SafetyBackupDir;
+            if (string.IsNullOrWhiteSpace(dir) || NetPath.IsNetwork(dir) || BackupEngine.IsUrl(dir)) dir = BackupEngine.StageDir(si, "safety");
+            BackupEngine.EnsureDir(plan.SqlConn, dir);
+            return dir;
         }
 
         static long SafeLen(string f) { try { return new FileInfo(f).Length; } catch { return 0; } }

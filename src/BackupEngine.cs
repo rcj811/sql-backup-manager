@@ -78,9 +78,9 @@ namespace SqlBackupManager
         /// 本機暫存資料夾：C:\\ProgramData\\SqlBackupManager\\stage，並授權 SQL 服務帳戶寫入。
         /// (SQL 預設的 Backup 資料夾一般權限的程式讀不到，所以不用它，除非授權失敗)
         /// </summary>
-        public static string StageDir(ServerInfo si)
+        public static string StageDir(ServerInfo si, string name = "stage")
         {
-            string d = Path.Combine(AppPaths.DataDir, "stage");
+            string d = Path.Combine(AppPaths.DataDir, name);
             try
             {
                 Directory.CreateDirectory(d);
@@ -101,6 +101,13 @@ namespace SqlBackupManager
                 return d;
             }
             catch { return si.DefaultBackupPath; }
+        }
+
+        /// <summary>確保資料夾存在：本程式建立一次，再用 SQL 服務帳戶身分建立一次 (xp_create_subdir)。</summary>
+        public static void EnsureDir(ConnectionSettings conn, string dir)
+        {
+            try { Directory.CreateDirectory(dir); } catch { }
+            if (conn != null) try { SqlOps.Exec(conn, "EXEC master.dbo.xp_create_subdir " + SqlOps.S(dir)); } catch { }
         }
 
         public static bool IsUrl(string p) { return p != null && p.StartsWith("http", StringComparison.OrdinalIgnoreCase); }

@@ -172,6 +172,8 @@ namespace SqlBackupManager
             var a = new List<string> { "--default-character-set=utf8mb4", "--hex-blob", "--add-drop-table" };
             if (job.SingleTransaction) { a.Add("--single-transaction"); a.Add("--quick"); }
             if (job.DumpRoutines) { a.Add("--routines"); a.Add("--triggers"); a.Add("--events"); }
+            // MySQL 開啟 GTID 時，dump 會寫入 SET @@GLOBAL.GTID_PURGED，還原到同一台會失敗 (ERROR 3546)；MariaDB 沒有這個參數
+            try { if (Version(c).IndexOf("MariaDB", StringComparison.OrdinalIgnoreCase) < 0) a.Add("--set-gtid-purged=OFF"); } catch { }
             a.Add(ToolRunner.Quote(db));
             WithDefaults(c, d => ToolRunner.Run(Exe(c, "mysqldump.exe"), d + " " + string.Join(" ", a), null, file, file.EndsWith(".gz"), null, onLine));
         }

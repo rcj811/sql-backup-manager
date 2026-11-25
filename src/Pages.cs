@@ -24,6 +24,13 @@ namespace SqlBackupManager
 
         public virtual void RefreshData() { }
 
+        /// <summary>視窗太小時頁面可捲動，內容不會被擠扁或切掉。</summary>
+        protected void MinContent(int w, int h)
+        {
+            AutoScroll = true;
+            AutoScrollMinSize = new Size(w, h);
+        }
+
         /// <summary>由上而下排列；最後一個元素填滿剩餘空間。</summary>
         protected void Stack(params Control[] items)
         {
@@ -133,6 +140,7 @@ namespace SqlBackupManager
             ColorStatus(grid, 4);
 
             Stack(Toolbar(run, check, refresh), tiles, mid, GridCard("最近活動", grid));
+            MinContent(Theme.S(900), tiles.Height + mid.Height + Theme.S(420));
         }
 
         public override void RefreshData()
@@ -198,7 +206,7 @@ namespace SqlBackupManager
         public DiskBar(string root)
         {
             this.root = root;
-            Height = TextRenderer.MeasureText("國", fRoot).Height + Theme.S(30);
+            Height = TextRenderer.MeasureText("國", fRoot).Height + TextRenderer.MeasureText("國", fText).Height + Theme.S(34);
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
             try
             {
@@ -213,9 +221,11 @@ namespace SqlBackupManager
         {
             var g = e.Graphics; g.Clear(Color.White);
             int th = TextRenderer.MeasureText("國", fRoot).Height;
-            TextRenderer.DrawText(g, root, fRoot, new Rectangle(0, 0, Width / 2, th), Theme.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-            TextRenderer.DrawText(g, text, fText, new Rectangle(Width / 3, 0, Width - Width / 3 - 2, th), Theme.SubText, TextFormatFlags.Right | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            // 第一行：路徑；第二行：進度條；第三行：剩餘空間 (分行顯示，長路徑也不會和文字重疊)
+            TextRenderer.DrawText(g, root, fRoot, new Rectangle(0, 0, Width - 2, th), Theme.Text, TextFormatFlags.PathEllipsis | TextFormatFlags.NoPrefix);
             var bar = new Rectangle(0, th + Theme.S(6), Width - 2, Theme.S(10));
+            int t2 = TextRenderer.MeasureText("國", fText).Height;
+            TextRenderer.DrawText(g, text, fText, new Rectangle(0, bar.Bottom + Theme.S(4), Width - 2, t2), Theme.SubText, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             using (var b = new SolidBrush(Color.FromArgb(232, 236, 241))) g.FillRectangle(b, bar);
             if (ratio >= 0)
             {
@@ -288,6 +298,7 @@ namespace SqlBackupManager
             var hint = Theme.Lbl("每個工作有自己的伺服器連線，必須測試連線成功才會執行。交易記錄備份需要 FULL 復原模式。", 9f, FontStyle.Regular, Theme.SubText);
             hint.AutoSize = false; hint.Height = TextRenderer.MeasureText("國", hint.Font).Height + Theme.S(4);
             Stack(Toolbar(add, edit, copy, del, toggle, run), hint, GridCard("備份工作清單", grid));
+            MinContent(Theme.S(900), Theme.S(420));
         }
 
         BackupJob Selected()
@@ -417,6 +428,7 @@ namespace SqlBackupManager
             Theme.Danger_(btnRestore);
             fl.Buttons(btnRestore);
             opt.Height = fl.Y + Theme.S(4);
+            int optW = opt.Controls.Cast<Control>().Max(c => c.Left + (c.AutoSize ? c.PreferredSize.Width : c.Width)) + Theme.S(40);
 
             chkStopAt.CheckedChanged += (s, e) => dtStop.Enabled = chkStopAt.Checked;
             txtTarget.TextChanged += (s, e) => UpdateButton();
@@ -440,6 +452,8 @@ namespace SqlBackupManager
             Controls.Add(src);
             Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = Theme.S(16) });
             Controls.Add(opt);
+            // 「選擇還原點」至少保留約 8 列表格的高度
+            MinContent(Math.Max(Theme.S(900), optW + Padding.Horizontal), opt.Height + Theme.S(16) + Theme.S(380) + Padding.Vertical);
             UpdateButton();
         }
 
@@ -715,6 +729,7 @@ namespace SqlBackupManager
                     l.Time, l.Job, l.Database, l.Kind, l.Status, l.File, Fmt.Size(l.SizeBytes), Fmt.Duration(l.DurationSec), l.Message), "日誌明細");
             };
             Stack(bar, countHost, GridCard(null, grid));
+            MinContent(Theme.S(900), Theme.S(420));
         }
 
         public override void RefreshData()

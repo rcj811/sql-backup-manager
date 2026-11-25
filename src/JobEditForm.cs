@@ -134,7 +134,7 @@ namespace SqlBackupManager
             fn0.Row(null, lblNetInfo, 720);
             lblNetInfo.Height = TextRenderer.MeasureText("國\n國\n國\n國", lblNetInfo.Font).Height + Theme.S(4);
             fn0.Y = lblNetInfo.Bottom + Theme.S(6);
-            fn0.Row("網路帳號", txtNetUser, 260, "例如 NAS\\admin、DOMAIN\\user；空白 = 使用目前登入的帳號");
+            fn0.Row("網路帳號", txtNetUser, 260, "例如 NAS\\admin；空白 = 目前登入的帳號");
             fn0.Row("網路密碼", txtNetPwd, 260, "以 DPAPI 加密儲存於本機");
             var btnNet = Theme.Btn("驗證網路路徑", true);
             fn0.Buttons(btnNet);
