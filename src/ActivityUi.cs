@@ -69,7 +69,9 @@ namespace SqlBackupManager
         {
             int pad = Theme.S(24), h = Height - Theme.S(10);
             btn.Location = new Point(Width - pad - btn.Width, (h - btn.Height) / 2);
-            int barW = Theme.S(220);
+            // 文字優先：剩餘寬度不夠時縮短進度條 (最短 60)
+            int free = btn.Left - pad - Theme.S(12) - Theme.S(56) - Theme.S(24);
+            int barW = Math.Max(Theme.S(60), Math.Min(Theme.S(220), free - Theme.S(380)));
             pct.Size = new Size(Theme.S(56), h); pct.Location = new Point(btn.Left - Theme.S(12) - pct.Width, 0);
             bar.Size = new Size(barW, Theme.S(10)); bar.Location = new Point(pct.Left - Theme.S(8) - barW, (h - bar.Height) / 2);
             // 單行顯示，太長用「…」省略 (不折行)
