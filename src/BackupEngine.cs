@@ -74,6 +74,35 @@ namespace SqlBackupManager
             }
         }
 
+        /// <summary>
+        /// 本機暫存資料夾：C:\\ProgramData\\SqlBackupManager\\stage，並授權 SQL 服務帳戶寫入。
+        /// (SQL 預設的 Backup 資料夾一般權限的程式讀不到，所以不用它，除非授權失敗)
+        /// </summary>
+        public static string StageDir(ServerInfo si)
+        {
+            string d = Path.Combine(AppPaths.DataDir, "stage");
+            try
+            {
+                Directory.CreateDirectory(d);
+                var sec = Directory.GetAccessControl(d);
+                System.Security.Principal.IdentityReference who;
+                try
+                {
+                    who = string.IsNullOrWhiteSpace(si.ServiceAccount) || si.ServiceAccount.StartsWith("(")
+                        ? (System.Security.Principal.IdentityReference)new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.AuthenticatedUserSid, null)
+                        : new System.Security.Principal.NTAccount(si.ServiceAccount).Translate(typeof(System.Security.Principal.SecurityIdentifier));
+                }
+                catch { who = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.AuthenticatedUserSid, null); }
+                sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(who,
+                    System.Security.AccessControl.FileSystemRights.Modify,
+                    System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+                    System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+                Directory.SetAccessControl(d, sec);
+                return d;
+            }
+            catch { return si.DefaultBackupPath; }
+        }
+
         public static bool IsUrl(string p) { return p != null && p.StartsWith("http", StringComparison.OrdinalIgnoreCase); }
 
         // ─────────── SQL Server ───────────
@@ -180,12 +209,23 @@ namespace SqlBackupManager
                     // → 先備份到 SQL Server 本機的預設備份資料夾，完成後由本程式複製過去
                     bool net = NetPath.IsNetwork(finalDir);
                     if (net) NetShare.Connect(finalDir, job.NetUser, job.NetPassword);
-                    if (net && job.StageNetwork && NetPath.IsLocalServer(job.SqlConn.Server) && !string.IsNullOrWhiteSpace(si.DefaultBackupPath))
+                    bool local = NetPath.IsLocalServer(job.SqlConn.Server);
+                    if (net && local && !string.IsNullOrWhiteSpace(si.DefaultBackupPath))
                     {
+                        // 一律走本機暫存：SQL 服務帳戶不碰 NAS，由本程式用工作設定的帳號複製
                         stage = true;
-                        dir = Path.Combine(si.DefaultBackupPath, "_SqlBackupManager_stage");
+                        dir = StageDir(si);
+                        if (idx == 1)
+                            Add(res, new LogEntry { Job = job.Name, Kind = kindText, Status = LogEntry.Info, File = NetPath.ToUnc(finalDir), Message = "網路路徑：先備份到本機 " + dir + "，再複製到 NAS" + (string.IsNullOrEmpty(job.NetUser) ? "（使用目前登入的帳號）" : "（帳號 " + job.NetUser + "）") });
                     }
-                    else if (net) dir = NetPath.ToUnc(finalDir);   // 至少把 Z:\ 換成 \\伺服器\分享
+                    else if (net)
+                    {
+                        dir = NetPath.ToUnc(finalDir);   // 至少把 Z:\ 換成 \\伺服器\分享
+                        if (idx == 1)
+                            Add(res, new LogEntry { Job = job.Name, Kind = kindText, Status = LogEntry.Warning, File = dir,
+                                Message = !local ? "SQL Server (" + job.SqlConn.Server + ") 不在這台電腦，無法本機暫存，將由 SQL Server 服務帳戶直接寫入 NAS，該帳戶需有 NAS 權限"
+                                                 : "讀不到 SQL Server 的預設備份資料夾，無法本機暫存，改由 SQL Server 服務帳戶直接寫入 NAS" });
+                    }
                     try { Directory.CreateDirectory(stage ? finalDir : dir); } catch { }
                     // 用 SQL Server 服務帳戶的身分建立資料夾 (避免作業系統錯誤 3：找不到路徑)
                     try { SqlOps.Exec(job.SqlConn, "EXEC master.dbo.xp_create_subdir " + SqlOps.S(dir)); } catch { }
@@ -299,6 +339,8 @@ namespace SqlBackupManager
                 string hint = "";
                 if (ex.Message.Contains("Operating system error 5") || ex.Message.Contains("作業系統錯誤 5"))
                     hint = "（SQL Server 服務帳戶 " + si.ServiceAccount + " 對備份資料夾沒有寫入權限）";
+                else if (ex.Message.Contains("error 1326") || ex.Message.Contains("錯誤 1326"))
+                    hint = "（SQL Server 服務帳戶 " + si.ServiceAccount + " 無法登入 NAS：請確認工作的 SQL Server 在這台電腦上，讓程式改用本機暫存再複製；或把服務帳戶改成有 NAS 權限的帳號）";
                 else if (ex.Message.Contains("Operating system error 3") || ex.Message.Contains("作業系統錯誤 3"))
                     hint = "（SQL Server 所在電腦找不到這個資料夾：請確認磁碟機存在；網路位置請用 \\\\伺服器\\分享 並勾選「先備份到本機再複製」，服務帳戶看不到 Z: 這類對應磁碟機）";
                 Add(res, new LogEntry { Job = job.Name, Database = d.Name, Kind = BackupJob.KindText(kind), Status = LogEntry.Failed, File = files.Count > 0 ? files[0] : "", DurationSec = sw.Elapsed.TotalSeconds, Message = ex.Message + hint });

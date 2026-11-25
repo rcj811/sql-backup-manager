@@ -297,7 +297,7 @@ namespace SqlBackupManager
                 // 網路上的備份檔：SQL 服務帳戶常讀不到 → 先複製到 SQL Server 本機暫存
                 if (NetPath.IsLocalServer(conn.Server) && !string.IsNullOrWhiteSpace(si.DefaultBackupPath))
                 {
-                    string stage = Path.Combine(si.DefaultBackupPath, "_SqlBackupManager_stage");
+                    string stage = BackupEngine.StageDir(si);
                     for (int i = 0; i < files.Count; i++)
                     {
                         if (!files[i].Any(NetPath.IsNetwork)) continue;

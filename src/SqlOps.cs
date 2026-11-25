@@ -115,6 +115,26 @@ SELECT @p;", cn))
                         si.DefaultBackupPath = Convert.ToString(cmd.ExecuteScalar());
                 }
                 catch { }
+                // 讀不到登錄檔 (權限不足) 時的備援：2019+ 的 SERVERPROPERTY，或資料檔旁邊的 Backup 資料夾
+                if (string.IsNullOrWhiteSpace(si.DefaultBackupPath))
+                {
+                    try
+                    {
+                        using (var cmd = new SqlCommand("SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(512))", cn))
+                            si.DefaultBackupPath = Convert.ToString(cmd.ExecuteScalar());
+                    }
+                    catch { }
+                }
+                if (string.IsNullOrWhiteSpace(si.DefaultBackupPath) && !string.IsNullOrWhiteSpace(si.DefaultDataPath))
+                {
+                    try
+                    {
+                        string parent = System.IO.Path.GetDirectoryName(si.DefaultDataPath.TrimEnd('\\'));
+                        si.DefaultBackupPath = string.IsNullOrEmpty(parent) ? si.DefaultDataPath : System.IO.Path.Combine(parent, "Backup");
+                    }
+                    catch { si.DefaultBackupPath = si.DefaultDataPath; }
+                }
+                si.DefaultBackupPath = (si.DefaultBackupPath ?? "").Trim().TrimEnd('\\');
                 return si;
             }
         }
