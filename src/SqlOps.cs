@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
+using System.Linq;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
 
@@ -259,6 +260,90 @@ ORDER BY CASE WHEN d.database_id <= 4 THEN 0 ELSE 1 END, d.name", cn))
         public static bool DatabaseExists(ConnectionSettings c, string db)
         {
             return Scalar(c, "SELECT DB_ID(@n)", new SqlParameter("@n", db)) != DBNull.Value;
+        }
+    }
+}
+
+namespace SqlBackupManager
+{
+    /// <summary>
+    /// 讓 SQL Server 服務本身用指定帳號連到網路分享 (xp_cmdshell 'net use ...')，
+    /// 之後 BACKUP / RESTORE 就能直接存取 \\NAS\...。
+    /// 適用 SQL Server 在別台電腦的情況 (Microsoft 文件記載的做法)；需要 sysadmin。
+    /// xp_cmdshell 原本關閉時，用完會自動關回去。
+    /// </summary>
+    public sealed class SqlNetUse : IDisposable
+    {
+        readonly ConnectionSettings conn;
+        readonly string share;
+        bool restoreAdv, restoreCmd, connected;
+        public readonly List<string> Output = new List<string>();
+
+        public SqlNetUse(ConnectionSettings conn, string uncPath, string user, string password)
+        {
+            this.conn = conn;
+            share = NetShare.ShareRoot(NetPath.ToUnc(uncPath));
+            if ((user ?? "").Contains("\"") || (password ?? "").Contains("\""))
+                throw new Exception("網路帳號或密碼不能包含雙引號 (\")");
+            EnableCmdShell();
+            try
+            {
+                Run("net use \"" + share + "\" /delete /y");   // 先清掉舊連線 (避免 1219：同一台伺服器不同帳號)
+                var outp = Run(string.IsNullOrWhiteSpace(user)
+                    ? "net use \"" + share + "\" /persistent:no"
+                    : "net use \"" + share + "\" \"" + password + "\" /user:\"" + user + "\" /persistent:no");
+                string all = string.Join(" ", outp);
+                bool ok = outp.Any(l => l.IndexOf("successfully", StringComparison.OrdinalIgnoreCase) >= 0 || l.Contains("成功"));
+                if (!ok) throw new Exception("SQL Server 無法連線到 " + share + "：" + (all.Trim() == "" ? "(沒有回應)" : all.Trim()));
+                connected = true;
+            }
+            catch { Dispose(); throw; }
+        }
+
+        void EnableCmdShell()
+        {
+            int adv = Convert.ToInt32(SqlOps.Scalar(conn, "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'show advanced options'"));
+            int cmd = Convert.ToInt32(SqlOps.Scalar(conn, "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'xp_cmdshell'"));
+            if (cmd == 1) return;
+            try
+            {
+                if (adv == 0) { SqlOps.Exec(conn, "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;"); restoreAdv = true; }
+                SqlOps.Exec(conn, "EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE;"); restoreCmd = true;
+            }
+            catch (Exception ex) { throw new Exception("無法啟用 xp_cmdshell（需要 sysadmin 權限的 SQL 帳號）：" + ex.Message); }
+        }
+
+        List<string> Run(string cmd)
+        {
+            var lines = new List<string>();
+            using (var cn = SqlOps.Open(conn))
+            using (var c = new SqlCommand("EXEC master.dbo.xp_cmdshell " + SqlOps.S(cmd), cn) { CommandTimeout = 120 })
+            using (var r = c.ExecuteReader())
+                while (r.Read()) if (!r.IsDBNull(0)) lines.Add(r.GetString(0));
+            Output.AddRange(lines);
+            return lines;
+        }
+
+        public void Dispose()
+        {
+            if (connected) { try { Run("net use \"" + share + "\" /delete /y"); } catch { } connected = false; }
+            try { if (restoreCmd) SqlOps.Exec(conn, "EXEC sp_configure 'xp_cmdshell', 0; RECONFIGURE;"); } catch { }
+            try { if (restoreAdv) SqlOps.Exec(conn, "EXEC sp_configure 'show advanced options', 0; RECONFIGURE;"); } catch { }
+            restoreCmd = restoreAdv = false;
+        }
+
+        /// <summary>驗證：SQL Server 連線到分享後，實際備份 model 資料庫到該處 (很小)，再刪除。</summary>
+        public static void Test(ConnectionSettings conn, string path, string user, string password)
+        {
+            string unc = NetPath.ToUnc(path);
+            using (new SqlNetUse(conn, unc, user, password))
+            {
+                try { SqlOps.Exec(conn, "EXEC master.dbo.xp_create_subdir " + SqlOps.S(unc)); } catch { }
+                string f = System.IO.Path.Combine(unc, "_sbm_sqltest_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".bak");
+                try { SqlOps.Exec(conn, "BACKUP DATABASE [model] TO DISK = " + SqlOps.S(f) + " WITH COPY_ONLY, INIT"); }
+                catch (Exception ex) { throw new Exception("SQL Server 已連上 " + unc + "，但無法寫入備份檔：" + ex.Message); }
+                try { SqlOps.Exec(conn, "EXEC master.dbo.xp_cmdshell " + SqlOps.S("del /q \"" + f + "\"")); } catch { }
+            }
         }
     }
 }

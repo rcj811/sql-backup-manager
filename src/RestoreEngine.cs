@@ -41,6 +41,7 @@ namespace SqlBackupManager
         public bool TailLog;                 // 覆寫前先做尾端記錄備份並套用 (還原到最新狀態)
         public ConnectionSettings SqlConn;   // 還原到哪一台 SQL Server
         public ToolConnection ToolConn;      // MySQL / PostgreSQL 連線
+        public string NetUser = "", NetPassword = "";   // 網路分享 (NAS) 帳號，SQL Server 在別台電腦時給 SQL 用
     }
 
     public static class RestoreEngine
@@ -175,6 +176,8 @@ namespace SqlBackupManager
             string db = plan.TargetDb.Trim();
             BackupEngine.Gate.Wait();
             BackupEngine.Busy = true;
+            Activity.Begin("還原：" + db, 1);
+            bool ok2 = false;
             var sw = Stopwatch.StartNew();
             string how = first.Engine == DbEngine.SqlServer ? "BACPAC 匯入" : first.Engine == DbEngine.MySql ? "MySQL 還原" : "PostgreSQL 還原";
             try
@@ -232,6 +235,7 @@ namespace SqlBackupManager
                     else PgTool.Restore(plan.ToolConn, db, first.File, exists, plan.KillConnections);
                 }
                 sw.Stop();
+                ok2 = true;
                 Logger.Write(new LogEntry { Job = "還原", Database = first.Kind == BackupKind.Globals ? "(伺服器)" : db, Kind = how, Status = LogEntry.Success, File = first.File, DurationSec = sw.Elapsed.TotalSeconds, Message = "還原完成" });
             }
             catch (Exception ex)
@@ -242,6 +246,7 @@ namespace SqlBackupManager
             }
             finally
             {
+                Activity.Finish(ok2 ? LogEntry.Success : LogEntry.Failed, ok2 ? "還原完成" : "還原失敗");
                 BackupEngine.Busy = false;
                 BackupEngine.Gate.Release();
                 BackupEngine.Report("就緒", 0);
@@ -259,6 +264,9 @@ namespace SqlBackupManager
 
             BackupEngine.Gate.Wait();
             BackupEngine.Busy = true;
+            Activity.Begin("還原：" + db, plan.Chain.Count);
+            bool ok = false;
+            SqlNetUse netSession = null;
             var sw = Stopwatch.StartNew();
             var temps = new List<string>();
             bool exists = false, singleUser = false;
@@ -295,6 +303,15 @@ namespace SqlBackupManager
 
                 // 2. 決定資料檔位置 (MOVE)
                 var si = SqlOps.GetServerInfo(conn);
+
+                // SQL Server 在別台電腦、備份檔在網路上 → 讓 SQL Server 自己用 NAS 帳號連線
+                var netFile = files.SelectMany(x => x).FirstOrDefault(NetPath.IsNetwork);
+                if (netFile != null && !NetPath.IsLocalServer(conn.Server))
+                {
+                    BackupEngine.Report("SQL Server 連線到 NAS…", -1);
+                    netSession = new SqlNetUse(conn, netFile, plan.NetUser, plan.NetPassword);
+                    for (int i = 0; i < files.Count; i++) files[i] = files[i].Select(NetPath.ToUnc).ToList();
+                }
 
                 // 網路上的備份檔：SQL 服務帳戶常讀不到 → 先複製到 SQL Server 本機暫存
                 if (NetPath.IsLocalServer(conn.Server) && !string.IsNullOrWhiteSpace(si.DefaultBackupPath))
@@ -384,6 +401,7 @@ namespace SqlBackupManager
                 // 5. 依序還原
                 for (int i = 0; i < plan.Chain.Count; i++)
                 {
+                    Activity.SetUnit(Math.Min(i, plan.Chain.Count - 1));
                     var it = plan.Chain[i];
                     bool last = i == plan.Chain.Count - 1;
                     var opts = new List<string> { "FILE = " + it.Position, "STATS = 5" };
@@ -404,6 +422,7 @@ namespace SqlBackupManager
                 }
                 singleUser = false;
                 sw.Stop();
+                ok = true;
                 Logger.Write(new LogEntry
                 {
                     Job = "還原", Database = db, Kind = "還原", Status = LogEntry.Success, File = plan.Chain.Last().File,
@@ -420,10 +439,12 @@ namespace SqlBackupManager
             }
             finally
             {
+                Activity.Finish(ok ? LogEntry.Success : LogEntry.Failed, ok ? "還原完成" : "還原失敗");
                 foreach (var t in temps) { try { File.Delete(t); } catch { } }
                 foreach (var d in temps.Select(Path.GetDirectoryName).Distinct())
                     try { if (Directory.GetFileSystemEntries(d).Length == 0) Directory.Delete(d); } catch { }
                 BackupEngine.Busy = false;
+                if (netSession != null) netSession.Dispose();
                 BackupEngine.Gate.Release();
                 BackupEngine.Report("就緒", 0);
             }

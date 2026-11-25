@@ -144,7 +144,7 @@ namespace SqlBackupManager
             Check("建立測試資料庫 (FULL 復原模式)", () =>
             {
                 Q("IF DB_ID('" + Db + "') IS NOT NULL BEGIN ALTER DATABASE [" + Db + "] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [" + Db + "]; END");
-                foreach (var x in new[] { "_R", "_P", "_N", "_Z", "_S", "_B" })
+                foreach (var x in new[] { "_R", "_P", "_N", "_Z", "_S", "_B", "_X" })
                     Q("IF DB_ID('" + Db + x + "') IS NOT NULL BEGIN ALTER DATABASE [" + Db + x + "] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [" + Db + x + "]; END");
                 Q("CREATE DATABASE [" + Db + "]; ALTER DATABASE [" + Db + "] SET RECOVERY FULL;");
                 Q("CREATE TABLE dbo.T(id int IDENTITY PRIMARY KEY, v nvarchar(50), t datetime2 DEFAULT SYSDATETIME())", Db);
@@ -154,6 +154,15 @@ namespace SqlBackupManager
 
             // 2. 本機備份
             Check("完整備份 → 本機資料夾", () => RunOk(NewJob("測試-完整", BackupKind.Full, local)));
+            Check("執行明細：步驟與百分比", () =>
+            {
+                var st = Activity.Snapshot();
+                Assert(!Activity.Running && Activity.Result == LogEntry.Success, "狀態不正確：" + Activity.Result);
+                Assert(Activity.Overall == 100, "整體百分比 " + Activity.Overall);
+                Assert(st.Count >= 3 && st.All(x => x.Done), "步驟數 " + st.Count);
+                Assert(st.Any(x => x.Percent == 100), "沒有記錄到百分比進度");
+                return st.Count + " 個步驟：" + string.Join(" → ", st.Select(x => x.Text).Take(5));
+            });
             Check("差異備份", () => { Insert(50); return RunOk(NewJob("測試-差異", BackupKind.Differential, local)); });
             int countLog1 = 0, countAtT1 = 0, countLog2 = 0;
             DateTime t1 = DateTime.MinValue;
@@ -233,6 +242,58 @@ namespace SqlBackupManager
                     Assert(Directory.GetFiles(Path.Combine(AppPaths.DataDir, "stage")).Length == 0, "暫存資料夾沒有清乾淨");
                     return r;
                 });
+                Check("遠端 SQL Server：讓 SQL 用 NAS 帳號連線 (xp_cmdshell net use) 驗證", () =>
+                {
+                    NetPath.ForceRemote = true;
+                    try { SqlNetUse.Test(Sql, nasPath, nasUser, nasPwd); }
+                    finally { NetPath.ForceRemote = false; }
+                    int cmd = Convert.ToInt32(Q("SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name='xp_cmdshell'"));
+                    Assert(cmd == 0, "xp_cmdshell 沒有關回去");
+                    return "SQL Server 實際寫入 NAS 成功，xp_cmdshell 已自動關回";
+                });
+                Check("遠端 SQL Server：完整備份 → NAS (SQL 直接連線)", () =>
+                {
+                    NetPath.ForceRemote = true;
+                    try
+                    {
+                        var j = NewJob("測試-遠端NAS", BackupKind.Full, nasPath + @"\remote"); j.NetUser = nasUser; j.NetPassword = nasPwd; j.CopyOnly = true;
+                        j.SqlConn.RemoteNetMode = 0;
+                        string r = RunOk(j);
+                        Assert(r.Contains("SbmTest_FULL"), r);
+                        return r;
+                    }
+                    finally { NetPath.ForceRemote = false; }
+                });
+                Check("遠端 SQL Server：錯誤的 NAS 密碼要失敗並說明", () =>
+                {
+                    NetPath.ForceRemote = true;
+                    try
+                    {
+                        var j = NewJob("測試-遠端NAS錯誤", BackupKind.Full, nasPath + @"\remote"); j.NetUser = nasUser; j.NetPassword = nasPwd + "x"; j.CopyOnly = true;
+                        Thread.Sleep(1100);
+                        var r = BackupEngine.RunJob(j);
+                        Assert(!r.Ok, "竟然成功");
+                        return r.Entries.First(e => e.Status == LogEntry.Failed).Message;
+                    }
+                    finally { NetPath.ForceRemote = false; }
+                });
+                string hostUser = Environment.GetEnvironmentVariable("SBM_HOST_USER"), hostPwd = Environment.GetEnvironmentVariable("SBM_HOST_PWD");
+                if (string.IsNullOrEmpty(hostUser)) Skip("遠端 SQL Server：主機中轉", "沒有設定 SBM_HOST_USER");
+                else Check("遠端 SQL Server：主機中轉 (經 C$ 取回再送 NAS)", () =>
+                {
+                    NetPath.ForceRemote = true;
+                    try
+                    {
+                        var j = NewJob("測試-中轉", BackupKind.Full, nasPath + @"\relay"); j.NetUser = nasUser; j.NetPassword = nasPwd; j.CopyOnly = true;
+                        j.SqlConn.RemoteNetMode = 1; j.SqlConn.HostStageLocal = @"C:\sbmrelay"; j.SqlConn.HostStageUnc = NetPath.AdminShare("localhost", @"C:\sbmrelay");
+                        j.SqlConn.HostUser = hostUser; j.SqlConn.HostPassword = hostPwd;
+                        NetShare.TestRelay(j.SqlConn, j.SqlConn.HostStageLocal, j.SqlConn.HostStageUnc, hostUser, hostPwd);
+                        string r = RunOk(j);
+                        Assert(Directory.GetFiles(@"C:\sbmrelay").Length == 0, "中轉資料夾沒有清乾淨");
+                        return r;
+                    }
+                    finally { NetPath.ForceRemote = false; }
+                });
                 Check("記錄備份 → 網路分享 (Z: 對應磁碟機)", () =>
                 {
                     string drive = Environment.GetEnvironmentVariable("SBM_NAS_DRIVE");
@@ -290,6 +351,16 @@ namespace SqlBackupManager
                     var n = RestoreEngine.Scan(nasPath, Sql, null).Where(i => i.Database == Db && i.Kind == BackupKind.Full).OrderBy(i => i.Time).Last();
                     RestoreEngine.Execute(new RestorePlan { Chain = new List<BackupItem> { n }, TargetDb = Db + "_N", SqlConn = Sql });
                     return Count(Db + "_N") + " 筆";
+                });
+            if (nasPwd != "")
+                Check("遠端 SQL Server：從 NAS 還原 (SQL 直接連線)", () =>
+                {
+                    NetShare.Connect(nasPath, nasUser, nasPwd);
+                    var n = RestoreEngine.Scan(nasPath + @"\remote", Sql, null).First(i => i.Database == Db);
+                    NetPath.ForceRemote = true;
+                    try { RestoreEngine.Execute(new RestorePlan { Chain = new List<BackupItem> { n }, TargetDb = Db + "_X", SqlConn = Sql, NetUser = nasUser, NetPassword = nasPwd }); }
+                    finally { NetPath.ForceRemote = false; }
+                    return Count(Db + "_X") + " 筆";
                 });
             Check("覆寫原資料庫 + 尾端記錄 (Tail-log) 還原到最新", () =>
             {
@@ -381,6 +452,15 @@ namespace SqlBackupManager
                 });
             }
 
+            Check("日誌：全部清除", () =>
+            {
+                Assert(Logger.Read(DateTime.Today.AddDays(-1), DateTime.Now.AddMinutes(1)).Count > 0, "清除前沒有日誌");
+                File.Copy(Directory.GetFiles(AppPaths.LogDir, "backup_*.log").First(), Path.Combine(outDir, "log-before-clear.log"), true);
+                int n = Logger.ClearAll();
+                Assert(Logger.Read(DateTime.Today.AddYears(-1), DateTime.Now.AddMinutes(1)).Count == 0, "清除後還有日誌");
+                return "刪除 " + n + " 個日誌檔";
+            });
+
             return WriteReport("SQL 備份管理 自動測試");
         }
 
@@ -412,6 +492,21 @@ namespace SqlBackupManager
                         f.ShowPage(i); Pump(800);
                         Shot(f, fs + "pt_" + (i + 1) + "_" + names[i] + ".png");
                     }
+                    // 模擬執行中：狀態列與執行明細
+                    Activity.Begin("備份：會計 每日差異 (NAS)", 3);
+                    Activity.Step("SQL Server 連線到 NAS…", -1);
+                    Activity.SetUnits(3); Activity.SetUnit(1);
+                    Activity.Step("[1/3] NACC 差異備份", 100);
+                    Activity.Step("NACC 驗證備份檔…", -1);
+                    Activity.Step("[2/3] ERP 差異備份", 45);
+                    f.ShowPage(0); Pump(1200);
+                    Shot(f, fs + "pt_7_執行中狀態列.png");
+                    f.ShowActivity(); Pump(1200);
+                    var af = Application.OpenForms.OfType<ActivityForm>().FirstOrDefault();
+                    if (af != null) { Shot(af, fs + "pt_8_執行明細.png"); af.Close(); }
+                    Activity.Finish(LogEntry.Success, "成功 3、失敗 0、警告 0");
+                    Pump(800);
+                    Shot(f, fs + "pt_9_完成狀態列.png");
                     var je = new JobEditForm(js[1].Clone(), js[1]) { StartPosition = FormStartPosition.Manual, Location = new Point(40, 40) };
                     je.Show(); Pump(800);
                     var tabs = (TabControl)je.Controls[0];

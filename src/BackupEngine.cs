@@ -20,6 +20,7 @@ namespace SqlBackupManager
         public int Success, Failed, Warnings;
         public List<LogEntry> Entries = new List<LogEntry>();
         public bool Ok { get { return Failed == 0; } }
+        public bool SqlNetUse;   // 本次由 SQL Server 自己連線 NAS
         public string Summary
         {
             get { return string.Format("成功 {0}、失敗 {1}、警告 {2}", Success, Failed, Warnings); }
@@ -36,6 +37,7 @@ namespace SqlBackupManager
 
         public static void Report(string msg, int pct)
         {
+            Activity.Step(msg, pct);
             var h = Progress;
             if (h != null) try { h(msg, pct); } catch { }
         }
@@ -50,9 +52,10 @@ namespace SqlBackupManager
             var res = new JobResult { Job = job };
             Gate.Wait();
             Busy = true;
+            Activity.Begin("備份：" + job.Name, 1);
             try
             {
-                Report("執行工作：" + job.Name, -1);
+                Report("開始執行工作：" + job.Name, -1);
                 if (!job.ConnVerified)
                 {
                     Add(res, new LogEntry { Job = job.Name, Kind = BackupJob.KindText(job.Kind), Status = LogEntry.Failed, Message = "連線尚未驗證：請到「備份工作」編輯此工作，在「連線」頁按「測試連線」成功後再儲存" });
@@ -68,6 +71,7 @@ namespace SqlBackupManager
             }
             finally
             {
+                Activity.Finish(res.Failed > 0 ? LogEntry.Failed : LogEntry.Success, res.Summary);
                 Busy = false;
                 Gate.Release();
                 Report("就緒", 0);
@@ -142,9 +146,30 @@ namespace SqlBackupManager
             }
 
             var done = new List<string>();
+            SqlNetUse session = null;
+            bool netTarget = !IsUrl(job.TargetPath) && NetPath.IsNetwork(job.TargetPath);
+            if (netTarget && job.Kind != BackupKind.Bacpac && !NetPath.IsLocalServer(job.SqlConn.Server) && job.SqlConn.RemoteNetMode == 0)
+            {
+                try
+                {
+                    Report("SQL Server 連線到 NAS…", -1);
+                    session = new SqlNetUse(job.SqlConn, job.TargetPath, job.NetUser, job.NetPassword);
+                    res.SqlNetUse = true;
+                    Add(res, new LogEntry { Job = job.Name, Kind = kt, Status = LogEntry.Info, File = NetPath.ToUnc(job.TargetPath), Message = "SQL Server 在 " + NetPath.HostOf(job.SqlConn.Server) + "：已讓 SQL Server 用帳號 " + (job.NetUser == "" ? "(目前帳號)" : job.NetUser) + " 連線 NAS，直接備份到網路路徑" });
+                }
+                catch (Exception ex)
+                {
+                    Add(res, new LogEntry { Job = job.Name, Kind = kt, Status = LogEntry.Failed, File = NetPath.ToUnc(job.TargetPath), Message = ex.Message });
+                    return null;
+                }
+            }
+            try
+            {
+            Activity.SetUnits(targets.Count);
             for (int i = 0; i < targets.Count; i++)
             {
                 var d = targets[i];
+                Activity.SetUnit(i);
                 if (!d.State.Equals("ONLINE", StringComparison.OrdinalIgnoreCase))
                 {
                     Add(res, new LogEntry { Job = job.Name, Database = d.Name, Kind = kt, Status = LogEntry.Warning, Message = "資料庫狀態為 " + d.State + "，已略過" });
@@ -154,6 +179,8 @@ namespace SqlBackupManager
                 else BackupOne(res, job, d, si, i + 1, targets.Count);
                 done.Add(d.Name);
             }
+            }
+            finally { if (session != null) session.Dispose(); }
             return done;
         }
 
@@ -209,7 +236,8 @@ namespace SqlBackupManager
             {
                 string finalDir = DirFor(job, job.TargetPath, d.Name);
                 string dir = finalDir;
-                bool stage = false;
+                bool stage = false, relay = false;
+                string relayUnc = null;
                 if (!url)
                 {
                     // 網路路徑：SQL 服務帳戶看不到對應磁碟機 (Z:)，也常沒有 NAS 權限
@@ -225,12 +253,23 @@ namespace SqlBackupManager
                         if (idx == 1)
                             Add(res, new LogEntry { Job = job.Name, Kind = kindText, Status = LogEntry.Info, File = NetPath.ToUnc(finalDir), Message = "網路路徑：先備份到本機 " + dir + "，再複製到 NAS" + (string.IsNullOrEmpty(job.NetUser) ? "（使用目前登入的帳號）" : "（帳號 " + job.NetUser + "）") });
                     }
+                    else if (net && !local && job.SqlConn.RemoteNetMode == 1 && job.SqlConn.HasRelay)
+                    {
+                        // SQL Server 在別台電腦：先寫到它自己電腦的暫存資料夾，本程式再經系統分享取回
+                        stage = true; relay = true;
+                        dir = job.SqlConn.HostStageLocal.Trim().TrimEnd('\\');
+                        relayUnc = job.SqlConn.HostStageUnc.Trim().TrimEnd('\\');
+                        NetShare.Connect(relayUnc, job.SqlConn.HostUser, job.SqlConn.HostPassword);
+                        if (idx == 1)
+                            Add(res, new LogEntry { Job = job.Name, Kind = kindText, Status = LogEntry.Info, File = NetPath.ToUnc(finalDir), Message = "SQL Server 在 " + NetPath.HostOf(job.SqlConn.Server) + "：先備份到該主機的 " + dir + "，經 " + relayUnc + " 取回後複製到 NAS" });
+                    }
+                    else if (net && res.SqlNetUse) dir = NetPath.ToUnc(finalDir);
                     else if (net)
                     {
                         dir = NetPath.ToUnc(finalDir);   // 至少把 Z:\ 換成 \\伺服器\分享
                         if (idx == 1)
                             Add(res, new LogEntry { Job = job.Name, Kind = kindText, Status = LogEntry.Warning, File = dir,
-                                Message = !local ? "SQL Server (" + job.SqlConn.Server + ") 不在這台電腦，無法本機暫存，將由 SQL Server 服務帳戶直接寫入 NAS，該帳戶需有 NAS 權限"
+                                Message = !local ? "SQL Server (" + job.SqlConn.Server + ") 不在這台電腦，且沒有設定「SQL 主機中轉」，將由 SQL Server 服務帳戶直接寫入 NAS（該帳戶需有 NAS 權限）。請編輯工作，在「3. 存放位置」設定 SQL 主機中轉並驗證"
                                                  : "讀不到 SQL Server 的預設備份資料夾，無法本機暫存，改由 SQL Server 服務帳戶直接寫入 NAS" });
                     }
                     try { Directory.CreateDirectory(stage ? finalDir : dir); } catch { }
@@ -294,6 +333,12 @@ namespace SqlBackupManager
                 }
 
                 long size = 0;
+                if (relay)
+                {
+                    // 主機中轉：之後的壓縮、複製、刪除都經由網路路徑操作
+                    files = files.Select(f => Path.Combine(relayUnc, Path.GetFileName(f))).ToList();
+                    shown = files[0];
+                }
                 if (!url)
                 {
                     if (job.ZipAfterBackup)
@@ -410,9 +455,11 @@ namespace SqlBackupManager
             }
             var targets = PickTargets(res, job, dbs);
             var done = new List<string>();
+            Activity.SetUnits(targets.Count);
             for (int i = 0; i < targets.Count; i++)
             {
                 var d = targets[i];
+                Activity.SetUnit(i);
                 if (my && (d.Name == "information_schema" || d.Name == "performance_schema")) continue;
                 var sw = Stopwatch.StartNew();
                 string file = "";
@@ -511,6 +558,7 @@ namespace SqlBackupManager
 
         static void Add(JobResult res, LogEntry e)
         {
+            if (e.Status == LogEntry.Failed) Activity.Step("✖ " + (string.IsNullOrEmpty(e.Database) ? "" : e.Database + "：") + e.Message, -1);
             if (e.Status == LogEntry.Success) res.Success++;
             else if (e.Status == LogEntry.Failed) res.Failed++;
             else if (e.Status == LogEntry.Warning) res.Warnings++;
@@ -641,8 +689,28 @@ namespace SqlBackupManager
         }
 
         /// <summary>SQL Server 是否就在這台電腦上 (才能使用本機暫存再複製)。</summary>
+        /// <summary>測試用：當作 SQL Server 在別台電腦。</summary>
+        public static bool ForceRemote;
+
+        /// <summary>SQL Server 連線字串中的主機名稱 (去掉執行個體、連接埠)。</summary>
+        public static string HostOf(string server)
+        {
+            string h = (server ?? "").Trim();
+            int c = h.IndexOf(':'); if (c > 0 && c < 4) h = h.Substring(c + 1);
+            h = h.Split('\\')[0].Split(',')[0].Trim();
+            return h == "" || h == "." || h == "(local)" ? Environment.MachineName : h;
+        }
+
+        /// <summary>C:\\Folder → \\\\主機\\C$\\Folder (Windows 系統管理分享)。</summary>
+        public static string AdminShare(string host, string localPath)
+        {
+            if (string.IsNullOrWhiteSpace(localPath) || localPath.Length < 2 || localPath[1] != ':') return "";
+            return @"\\" + host + "\\" + char.ToUpperInvariant(localPath[0]) + "$" + localPath.Substring(2);
+        }
+
         public static bool IsLocalServer(string server)
         {
+            if (ForceRemote) return false;
             string h = (server ?? "").Trim();
             if (h.StartsWith("tcp:", StringComparison.OrdinalIgnoreCase)) h = h.Substring(4);
             if (h.StartsWith("np:", StringComparison.OrdinalIgnoreCase) || h.StartsWith("lpc:", StringComparison.OrdinalIgnoreCase)) h = h.Substring(h.IndexOf(':') + 1);
@@ -699,6 +767,29 @@ namespace SqlBackupManager
                 throw new System.ComponentModel.Win32Exception(rc, "無法連線到 " + root + "：" + new System.ComponentModel.Win32Exception(rc).Message + "（代碼 " + rc + "）");
         }
 
+        /// <summary>
+        /// 驗證主機中轉：本程式經 unc 寫入測試檔，再請 SQL Server 用 local 路徑確認看得到同一個檔案。
+        /// </summary>
+        public static void TestRelay(ConnectionSettings sql, string local, string unc, string user, string password)
+        {
+            Connect(unc, user, password);
+            try { SqlOps.Exec(sql, "EXEC master.dbo.xp_create_subdir " + SqlOps.S(local)); } catch { }
+            try { Directory.CreateDirectory(unc); } catch { }
+            string name = "_sbm_relay_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp";
+            string f = Path.Combine(unc, name);
+            try { File.WriteAllText(f, "relay test"); }
+            catch (Exception ex) { throw new Exception("無法寫入 " + unc + "：" + ex.Message + "（使用系統分享 C$ 需要該電腦的系統管理員帳號）"); }
+            try
+            {
+                int exists = 0;
+                using (var cn = SqlOps.Open(sql))
+                using (var cmd = new System.Data.SqlClient.SqlCommand("EXEC master.dbo.xp_fileexist " + SqlOps.S(Path.Combine(local, name)), cn))
+                using (var r = cmd.ExecuteReader()) if (r.Read()) exists = Convert.ToInt32(r[0]);
+                if (exists != 1) throw new Exception("「" + local + "」和「" + unc + "」不是同一個資料夾，請確認存取路徑");
+            }
+            finally { try { File.Delete(f); } catch { } }
+        }
+
         /// <summary>連線後建立資料夾、寫入並刪除測試檔，確認可寫入。</summary>
         public static void TestWrite(string path, string user, string password)
         {
@@ -713,6 +804,85 @@ namespace SqlBackupManager
             }
             catch (UnauthorizedAccessException) { throw new Exception(unc + "：帳號沒有寫入權限"); }
             catch (IOException ex) { throw new Exception(unc + "：" + ex.Message); }
+        }
+    }
+
+    public class ActivityStep
+    {
+        public DateTime Time;
+        public string Text;
+        public int Percent = -1;
+        public bool Done;
+    }
+
+    /// <summary>目前正在執行的備份 / 還原：標題、步驟清單、整體百分比 (給狀態列與明細視窗顯示)。</summary>
+    public static class Activity
+    {
+        static readonly object L = new object();
+        static readonly List<ActivityStep> steps = new List<ActivityStep>();
+        public static string Title = "";
+        public static DateTime Start, End;
+        public static bool Running;
+        public static string Result = "", Summary = "";
+        static int units = 1, unit;
+        static readonly Regex Pct = new Regex(@"\s+\d{1,3}%$");
+
+        public static void Begin(string title, int u)
+        {
+            lock (L) { Title = title; Start = DateTime.Now; Running = true; Result = Summary = ""; steps.Clear(); units = Math.Max(1, u); unit = 0; }
+        }
+        public static void SetUnits(int u) { lock (L) units = Math.Max(1, u); }
+        public static void SetUnit(int u) { lock (L) unit = Math.Max(0, Math.Min(units - 1, u)); }
+
+        public static void Step(string msg, int pct)
+        {
+            if (string.IsNullOrEmpty(msg) || msg == "就緒") return;
+            lock (L)
+            {
+                if (!Running) return;
+                string text = Pct.Replace(msg.Trim(), "");
+                var last = steps.Count > 0 ? steps[steps.Count - 1] : null;
+                if (last != null && last.Text == text) { if (pct >= 0) last.Percent = pct; return; }
+                if (last != null) { last.Done = true; if (last.Percent >= 0) last.Percent = 100; }
+                steps.Add(new ActivityStep { Time = DateTime.Now, Text = text, Percent = pct > 0 ? pct : (pct == 0 ? 0 : -1) });
+            }
+        }
+
+        public static void Finish(string result, string summary)
+        {
+            lock (L)
+            {
+                if (steps.Count > 0) { var l = steps[steps.Count - 1]; l.Done = true; if (l.Percent >= 0) l.Percent = 100; }
+                steps.Add(new ActivityStep { Time = DateTime.Now, Text = (result == LogEntry.Failed ? "結束（有錯誤）：" : "完成：") + summary, Done = true });
+                Running = false; Result = result; Summary = summary; End = DateTime.Now; unit = units;
+            }
+        }
+
+        /// <summary>整體百分比 = (已完成的資料庫 + 目前這個的進度) / 總數。</summary>
+        public static int Overall
+        {
+            get
+            {
+                lock (L)
+                {
+                    if (!Running) return Title == "" ? 0 : 100;
+                    var last = steps.LastOrDefault(s => s.Percent >= 0);
+                    double cur = last != null && !last.Done ? last.Percent / 100.0 : 0;
+                    return (int)Math.Min(99, (unit + cur) / units * 100);
+                }
+            }
+        }
+
+        public static string CurrentText
+        {
+            get { lock (L) { var l = steps.LastOrDefault(); return l == null ? "" : l.Text + (l.Percent >= 0 && !l.Done ? "  " + l.Percent + "%" : ""); } }
+        }
+
+        public static string UnitText { get { lock (L) return Running ? "第 " + Math.Min(unit + 1, units) + " / " + units + " 項" : ""; } }
+
+        public static List<ActivityStep> Snapshot()
+        {
+            lock (L) return steps.Select(s => new ActivityStep { Time = s.Time, Text = s.Text, Percent = s.Percent, Done = s.Done }).ToList();
         }
     }
 

@@ -31,7 +31,21 @@ namespace SqlBackupManager
         readonly Panel pnlNet = new Panel { BackColor = Color.FromArgb(247, 250, 255), Visible = false }, pnlRest = new Panel { BackColor = Color.White };
         readonly TextBox txtNetUser = new TextBox(), txtNetPwd = new TextBox { UseSystemPasswordChar = true };
         readonly Label lblNetInfo = new Label { AutoSize = false, UseMnemonic = false }, lblNetResult = new Label { AutoSize = false, UseMnemonic = false };
-        int restTopNoNet;
+        int restTopNoNet, netHostTop;
+        readonly Panel pnlHost = new Panel { BackColor = Color.FromArgb(247, 250, 255) }, pnlNetBottom = new Panel { BackColor = Color.FromArgb(247, 250, 255) };
+        readonly TextBox txtHostLocal = new TextBox(), txtHostUnc = new TextBox(), txtHostUser = new TextBox(), txtHostPwd = new TextBox { UseSystemPasswordChar = true };
+        readonly Label lblHostInfo = new Label { AutoSize = false, UseMnemonic = false };
+        bool hostUncEdited, hostUncAuto;
+        RadioButton rbNetUse, rbRelay;
+
+        void UpdateRelayFields()
+        {
+            bool r = rbRelay.Checked;
+            txtHostLocal.Enabled = txtHostUnc.Enabled = txtHostUser.Enabled = txtHostPwd.Enabled = r;
+        }
+
+        /// <summary>需要 SQL 主機中轉：SQL Server 原生備份、SQL 在別台電腦、而且有網路路徑。</summary>
+        bool NeedRelay { get { return Engine == DbEngine.SqlServer && Kind != BackupKind.Bacpac && NetPaths().Count > 0 && !NetPath.IsLocalServer(conn.SqlConn.Server); } }
         bool netVerified, netLoading;
         string netVerifiedFor = "";
         CheckBox chkSub, chkVerify, chkChecksum, chkCompress, chkZip, chkCopyOnly, chkFallback, chkSingleTx, chkRoutines, chkPgCustom, chkGzip;
@@ -136,14 +150,47 @@ namespace SqlBackupManager
             fn0.Y = lblNetInfo.Bottom + Theme.S(6);
             fn0.Row("網路帳號", txtNetUser, 260, "例如 NAS\\admin；空白 = 目前登入的帳號");
             fn0.Row("網路密碼", txtNetPwd, 260, "以 DPAPI 加密儲存於本機");
+            netHostTop = fn0.Y;
+
+            // SQL 主機中轉 (SQL Server 在別台電腦時才顯示)
+            pnlHost.Location = new Point(0, netHostTop); pnlHost.Width = Theme.S(820);
+            var fh = new FieldLayout(pnlHost, 20, 0, 160);
+            fh.Section("SQL Server 在另一台電腦");
+            lblHostInfo.Font = Theme.F(9f); lblHostInfo.ForeColor = Theme.SubText;
+            fh.Row(null, lblHostInfo, 720);
+            lblHostInfo.Height = TextRenderer.MeasureText("國\n國", lblHostInfo.Font).Height + Theme.S(4);
+            fh.Y = lblHostInfo.Bottom + Theme.S(6);
+            rbNetUse = fh.Radio("由 SQL Server 用上面的網路帳號直接連線 NAS（建議；SQL 帳號需有 sysadmin 權限）", true);
+            rbRelay = fh.Radio("SQL 主機中轉：SQL Server 先備份到它本機，本程式再用下列帳號取回送到 NAS", false);
+            fh.Row("SQL 主機暫存資料夾", txtHostLocal, 300, "SQL Server 那台電腦上的路徑");
+            fh.Row("本程式存取路徑", txtHostUnc, 420);
+            fh.Row("SQL 主機帳號", txtHostUser, 260, "該電腦的 Windows 帳號，例如 chin-sys\\Administrator");
+            fh.Row("SQL 主機密碼", txtHostPwd, 260, "以 DPAPI 加密儲存於本機");
+            pnlHost.Height = fh.Y;
+            rbNetUse.CheckedChanged += (s, e) => { UpdateRelayFields(); InvalidateNet(); };
+            pnlNet.Controls.Add(pnlHost);
+
+            pnlNetBottom.Width = Theme.S(820);
+            var fb = new FieldLayout(pnlNetBottom, 20, 0, 140);
             var btnNet = Theme.Btn("驗證網路路徑", true);
-            fn0.Buttons(btnNet);
-            fn0.Y -= Theme.S(8);
+            fb.Buttons(btnNet);
+            fb.Y -= Theme.S(8);
             lblNetResult.Font = Theme.F(9.5f);
-            fn0.Row(null, lblNetResult, 720);
+            fb.Row(null, lblNetResult, 720);
             lblNetResult.Height = TextRenderer.MeasureText("國\n國", lblNetResult.Font).Height + Theme.S(4);
-            pnlNet.Height = lblNetResult.Bottom + Theme.S(12);
+            pnlNetBottom.Height = lblNetResult.Bottom + Theme.S(12);
+            pnlNet.Controls.Add(pnlNetBottom);
             tOpt.Controls.Add(pnlNet);
+            txtHostLocal.TextChanged += (s, e) =>
+            {
+                // 存取路徑跟著暫存資料夾自動產生 (使用者自己改過就不再覆蓋)
+                if (!hostUncEdited) { hostUncAuto = true; txtHostUnc.Text = NetPath.AdminShare(NetPath.HostOf(conn.SqlConn.Server), txtHostLocal.Text.Trim()); hostUncAuto = false; }
+                InvalidateNet();
+            };
+            txtHostUnc.TextChanged += (s, e) => { if (!hostUncAuto) hostUncEdited = true; InvalidateNet(); };
+            txtHostUser.TextChanged += (s, e) => InvalidateNet();
+            txtHostPwd.TextChanged += (s, e) => InvalidateNet();
+            tabs.SelectedIndexChanged += (s, e) => OnPathsChanged();
             btnNet.Click += (s, e) => TestNetwork();
 
             // 其餘選項 (位置隨網路區顯示/隱藏而上下移動)
@@ -309,12 +356,31 @@ namespace SqlBackupManager
             return list;
         }
 
-        string NetKey() { return string.Join("|", NetPaths()).ToLowerInvariant() + "|" + txtNetUser.Text.Trim().ToLowerInvariant() + "|" + txtNetPwd.Text; }
+        string NetKey()
+        {
+            string k = string.Join("|", NetPaths()).ToLowerInvariant() + "|" + txtNetUser.Text.Trim().ToLowerInvariant() + "|" + txtNetPwd.Text;
+            if (NeedRelay) k += "|mode" + (rbRelay.Checked ? 1 : 0) + "|relay|" + conn.SqlConn.Server.ToLowerInvariant() + "|" + txtHostLocal.Text.Trim().ToLowerInvariant() + "|" + txtHostUnc.Text.Trim().ToLowerInvariant() + "|" + txtHostUser.Text.Trim().ToLowerInvariant() + "|" + txtHostPwd.Text;
+            return k;
+        }
 
         void OnPathsChanged()
         {
             var nets = NetPaths();
             bool show = nets.Count > 0;
+            bool relay = show && NeedRelay;
+            pnlHost.Visible = relay;
+            pnlNetBottom.Top = relay ? pnlHost.Bottom : netHostTop;
+            pnlNet.Height = pnlNetBottom.Bottom;
+            if (relay)
+            {
+                string host = NetPath.HostOf(conn.SqlConn.Server);
+                lblHostInfo.Text = "SQL Server 在 " + host + "，備份檔由 " + host + " 的 SQL 服務帳戶寫入，它預設無法登入 NAS（作業系統錯誤 1326 / 5）。\n請選擇處理方式（主機中轉使用 C$ 系統分享時，帳號需為 " + host + " 的系統管理員）：";
+                if (txtHostLocal.Text.Trim() == "")
+                {
+                    string def = !string.IsNullOrEmpty(conn.DefaultBackupDir) ? conn.DefaultBackupDir.Substring(0, 2) + "\\SqlBackupStage" : "C:\\SqlBackupStage";
+                    txtHostLocal.Text = def;
+                }
+            }
             pnlNet.Visible = show;
             pnlRest.Top = show ? pnlNet.Bottom + Theme.S(6) : restTopNoNet;
             if (show)
@@ -345,11 +411,21 @@ namespace SqlBackupManager
             var paths = NetPaths();
             if (paths.Count == 0) return;
             string user = txtNetUser.Text.Trim(), pwd = txtNetPwd.Text, key = NetKey();
+            bool relay = NeedRelay;
+            var sqlConn = conn.SqlConn;
+            string hostLocal = txtHostLocal.Text.Trim(), hostUnc = txtHostUnc.Text.Trim(), hostUser = txtHostUser.Text.Trim(), hostPwd = txtHostPwd.Text;
+            int relayMode = rbRelay.Checked ? 1 : 0;
+            if (relay && relayMode == 1 && (hostLocal == "" || hostUnc == "")) { lblNetResult.ForeColor = Theme.Danger; lblNetResult.Text = "✖ 請填寫 SQL 主機暫存資料夾與本程式存取路徑"; return; }
             lblNetResult.ForeColor = Theme.SubText; lblNetResult.Text = "驗證中…";
             System.Threading.Tasks.Task.Run(() =>
             {
                 string msg = null;
-                try { foreach (var p in paths) NetShare.TestWrite(p, user, pwd); }
+                try
+                {
+                    foreach (var p in paths) NetShare.TestWrite(p, user, pwd);
+                    if (relay && relayMode == 1) NetShare.TestRelay(sqlConn, hostLocal, hostUnc, hostUser, hostPwd);
+                    if (relay && relayMode == 0) SqlNetUse.Test(sqlConn, paths[0], user, pwd);
+                }
                 catch (Exception ex) { msg = ex.Message; }
                 try
                 {
@@ -357,7 +433,7 @@ namespace SqlBackupManager
                     {
                         netVerified = msg == null; netVerifiedFor = netVerified ? key : "";
                         lblNetResult.ForeColor = netVerified ? Theme.Success : Theme.Danger;
-                        lblNetResult.Text = netVerified ? "✔ 驗證成功：可以寫入 " + string.Join("、", paths) : "✖ 驗證失敗：" + msg;
+                        lblNetResult.Text = netVerified ? "✔ 驗證成功：可以寫入 " + string.Join("、", paths) + (relay ? (relayMode == 1 ? "；SQL 主機中轉正常" : "；SQL Server 已實際寫入 NAS 測試成功") : "") : "✖ 驗證失敗：" + msg;
                     }));
                 }
                 catch { }
@@ -437,7 +513,10 @@ namespace SqlBackupManager
             j.AllUserDatabases = rbAll.Checked; j.IncludeSystemDatabases = chkSys.Checked;
             j.Databases = lstDb.CheckedItems.Cast<object>().Select(NameOf).ToList();
             j.TargetPath = txtPath.Text.Trim(); j.SecondaryPath = txtSecondary.Text.Trim(); j.SubFolderPerDatabase = chkSub.Checked; j.StageNetwork = true;
-            j.NetUser = txtNetUser.Text.Trim(); j.NetPassword = txtNetPwd.Text; j.NetVerified = NetPaths().Count == 0 || netVerified;
+            j.NetUser = txtNetUser.Text.Trim(); j.NetPassword = txtNetPwd.Text;
+            j.SqlConn.HostStageLocal = txtHostLocal.Text.Trim(); j.SqlConn.HostStageUnc = txtHostUnc.Text.Trim();
+            j.SqlConn.HostUser = txtHostUser.Text.Trim(); j.SqlConn.HostPassword = txtHostPwd.Text;
+            j.SqlConn.RemoteNetMode = rbRelay.Checked ? 1 : 0; j.NetVerified = NetPaths().Count == 0 || netVerified;
             j.RetentionDays = (int)numRetention.Value;
             j.Verify = chkVerify.Checked; j.Checksum = chkChecksum.Checked; j.Compression = chkCompress.Checked; j.ZipAfterBackup = chkZip.Checked;
             j.CopyOnly = chkCopyOnly.Checked; j.FallbackToFull = chkFallback.Checked;
@@ -486,6 +565,10 @@ namespace SqlBackupManager
             txtPath.Text = (j.TargetPath ?? "").Trim();
             netLoading = true;
             txtNetUser.Text = j.NetUser; txtNetPwd.Text = j.NetPassword;
+            hostUncAuto = true; txtHostLocal.Text = j.SqlConn.HostStageLocal; txtHostUnc.Text = j.SqlConn.HostStageUnc; hostUncAuto = false;
+            hostUncEdited = j.SqlConn.HostStageUnc != "" && j.SqlConn.HostStageUnc != NetPath.AdminShare(NetPath.HostOf(j.SqlConn.Server), j.SqlConn.HostStageLocal);
+            txtHostUser.Text = j.SqlConn.HostUser; txtHostPwd.Text = j.SqlConn.HostPassword;
+            rbRelay.Checked = j.SqlConn.RemoteNetMode == 1; rbNetUse.Checked = !rbRelay.Checked; UpdateRelayFields();
             txtSecondary.Text = j.SecondaryPath;
             netLoading = false;
             netVerified = j.NetVerified && NetPaths().Count > 0;

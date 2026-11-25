@@ -109,7 +109,9 @@ namespace SqlBackupManager
             var content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Page };
             foreach (var p in pages) content.Controls.Add(p);
             var right = new Panel { Dock = DockStyle.Fill };
-            right.Controls.Add(content); right.Controls.Add(headerLine); right.Controls.Add(header);
+            var banner = new ActivityBanner();
+            banner.OpenDetails += ShowActivity;
+            right.Controls.Add(content); right.Controls.Add(banner); right.Controls.Add(headerLine); right.Controls.Add(header);
 
             var status = new StatusStrip { BackColor = Color.White, SizingGrip = true, Font = Theme.F(9f) };
             stBar.Size = new Size(Theme.S(180), Theme.S(16));
@@ -127,6 +129,7 @@ namespace SqlBackupManager
             menu.Items.Add("立即執行全部工作", null, (s, e) => RunJobs(SettingsStore.Current.Jobs.Where(j => j.Enabled).ToList()));
             miPause = new ToolStripMenuItem("暫停排程", null, (s, e) => TogglePause());
             menu.Items.Add(miPause);
+            menu.Items.Add("執行明細", null, (s, e) => { ShowFromTray(); ShowActivity(); });
             menu.Items.Add("備份日誌", null, (s, e) => { ShowFromTray(); ShowPage(3); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("結束程式", null, (s, e) => ExitApp());
@@ -168,6 +171,15 @@ namespace SqlBackupManager
         {
             if (IsDisposed) return;
             try { if (InvokeRequired) BeginInvoke(a); else a(); } catch { }
+        }
+
+        ActivityForm activityForm;
+
+        /// <summary>開啟「執行明細」(同時只開一個)。</summary>
+        public void ShowActivity()
+        {
+            if (activityForm == null || activityForm.IsDisposed) { activityForm = new ActivityForm(); activityForm.Show(this); }
+            else { activityForm.WindowState = FormWindowState.Normal; activityForm.Activate(); }
         }
 
         public void ShowPage(int idx)

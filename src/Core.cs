@@ -232,6 +232,20 @@ namespace SqlBackupManager
             return list.OrderByDescending(x => x.Time).ToList();
         }
 
+        /// <summary>刪除所有日誌檔，回傳刪除的檔案數。</summary>
+        public static int ClearAll()
+        {
+            int n = 0;
+            lock (Sync)
+            {
+                foreach (var f in Directory.GetFiles(AppPaths.LogDir, "backup_*.log"))
+                    try { File.Delete(f); n++; } catch { }
+            }
+            var h = EntryAdded;
+            if (h != null) try { h(new LogEntry { Time = DateTime.Now, Status = LogEntry.Info }); } catch { }
+            return n;
+        }
+
         public static void Cleanup(int keepDays)
         {
             if (keepDays <= 0) return;

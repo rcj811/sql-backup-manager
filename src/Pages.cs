@@ -140,7 +140,6 @@ namespace SqlBackupManager
             ColorStatus(grid, 4);
 
             Stack(Toolbar(run, check, refresh), tiles, mid, GridCard("最近活動", grid));
-            MinContent(Theme.S(900), tiles.Height + mid.Height + Theme.S(420));
         }
 
         public override void RefreshData()
@@ -298,7 +297,6 @@ namespace SqlBackupManager
             var hint = Theme.Lbl("每個工作有自己的伺服器連線，必須測試連線成功才會執行。交易記錄備份需要 FULL 復原模式。", 9f, FontStyle.Regular, Theme.SubText);
             hint.AutoSize = false; hint.Height = TextRenderer.MeasureText("國", hint.Font).Height + Theme.S(4);
             Stack(Toolbar(add, edit, copy, del, toggle, run), hint, GridCard("備份工作清單", grid));
-            MinContent(Theme.S(900), Theme.S(420));
         }
 
         BackupJob Selected()
@@ -452,8 +450,6 @@ namespace SqlBackupManager
             Controls.Add(src);
             Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = Theme.S(16) });
             Controls.Add(opt);
-            // 「選擇還原點」至少保留約 8 列表格的高度
-            MinContent(Math.Max(Theme.S(900), optW + Padding.Horizontal), opt.Height + Theme.S(16) + Theme.S(380) + Padding.Vertical);
             UpdateButton();
         }
 
@@ -642,6 +638,13 @@ namespace SqlBackupManager
                 StopAt = chkStopAt.Checked ? (DateTime?)dtStop.Value : null,
                 SafetyBackupDir = txtFolder.Text.Trim(), SqlConn = c.Sql, ToolConn = c.Tool
             };
+            // 備份檔在 NAS：沿用備份到同一個分享的工作所設定的網路帳號
+            var share = NetPath.IsNetwork(chain[0].File) ? NetShare.ShareRoot(NetPath.ToUnc(chain[0].File)) : null;
+            if (share != null)
+            {
+                var src = SettingsStore.Current.Jobs.FirstOrDefault(j => new[] { j.TargetPath, j.SecondaryPath }.Any(p => !string.IsNullOrWhiteSpace(p) && NetPath.IsNetwork(p) && NetShare.ShareRoot(NetPath.ToUnc(p)).Equals(share, StringComparison.OrdinalIgnoreCase)));
+                if (src != null) { plan.NetUser = src.NetUser; plan.NetPassword = src.NetPassword; }
+            }
             btnRestore.Enabled = false;
             Task.Run(() =>
             {
@@ -708,12 +711,21 @@ namespace SqlBackupManager
             var query = Theme.Btn("查詢", true);
             var export = Theme.Btn("匯出 CSV");
             var open = Theme.Btn("開啟日誌資料夾");
+            var clear = Theme.Btn("全部清除");
+            clear.ForeColor = Theme.Danger; clear.FlatAppearance.BorderColor = Color.FromArgb(240, 190, 184);
+            clear.Click += (s, e) =>
+            {
+                if (MessageBox.Show("確定要清除「全部」備份日誌嗎？\n\n所有日期的紀錄都會刪除，無法復原。\n（不會刪除備份檔）", "全部清除", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+                int n = Logger.ClearAll();
+                RefreshData();
+                Main.SetStatus("已清除 " + n + " 個日誌檔", 0);
+            };
             query.Click += (s, e) => RefreshData();
             txtSearch.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; RefreshData(); } };
             export.Click += (s, e) => Export();
             open.Click += (s, e) => Process.Start("explorer.exe", AppPaths.LogDir);
 
-            var bar = Toolbar(Theme.Lbl("日期"), dtFrom, Theme.Lbl("至"), dtTo, Theme.Lbl("狀態"), cbStatus, Theme.Lbl("關鍵字"), txtSearch, query, export, open);
+            var bar = Toolbar(Theme.Lbl("日期"), dtFrom, Theme.Lbl("至"), dtTo, Theme.Lbl("狀態"), cbStatus, Theme.Lbl("關鍵字"), txtSearch, query, export, open, clear);
             lblCount.Font = Theme.F(9f); lblCount.ForeColor = Theme.SubText;
             var countHost = new Panel { Height = TextRenderer.MeasureText("國", lblCount.Font).Height + Theme.S(4) };
             countHost.Controls.Add(lblCount);
@@ -729,7 +741,6 @@ namespace SqlBackupManager
                     l.Time, l.Job, l.Database, l.Kind, l.Status, l.File, Fmt.Size(l.SizeBytes), Fmt.Duration(l.DurationSec), l.Message), "日誌明細");
             };
             Stack(bar, countHost, GridCard(null, grid));
-            MinContent(Theme.S(900), Theme.S(420));
         }
 
         public override void RefreshData()

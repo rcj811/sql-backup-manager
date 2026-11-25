@@ -43,6 +43,24 @@ namespace SqlBackupManager
         public int ConnectTimeoutSec = 15;
         public string SqlPackagePath = "";   // BACPAC 用，空白 = 自動尋找
 
+        // SQL Server 在別台電腦時，備份到網路路徑的「主機中轉」：
+        // SQL 先寫到它自己電腦的 HostStageLocal，本程式再用 HostUser 經 HostStageUnc 取回，送到 NAS
+        public string HostStageLocal = "";   // SQL 主機上的資料夾，例如 C:\SqlBackupStage
+        public string HostStageUnc = "";     // 本程式存取它的網路路徑，例如 \\chin-sys\C$\SqlBackupStage
+        public string HostUser = "";         // SQL 主機的 Windows 帳號 (需能寫入上面的分享)
+        public int RemoteNetMode;            // SQL 在別台電腦時：0 = SQL Server 自己用 NAS 帳號連線 (xp_cmdshell net use)，1 = SQL 主機中轉
+        public string HostPasswordEnc = "";
+
+        [XmlIgnore]
+        public string HostPassword
+        {
+            get { return Crypto.Unprotect(HostPasswordEnc); }
+            set { HostPasswordEnc = Crypto.Protect(value); }
+        }
+
+        [XmlIgnore]
+        public bool HasRelay { get { return !string.IsNullOrWhiteSpace(HostStageLocal) && !string.IsNullOrWhiteSpace(HostStageUnc); } }
+
         public ConnectionSettings Copy() { return (ConnectionSettings)MemberwiseClone(); }
         public string Key { get { return (Server + ":" + (UseWindowsAuth ? "win" : User)).ToLowerInvariant(); } }
 
