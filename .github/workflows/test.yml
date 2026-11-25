@@ -86,6 +86,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force results\ui | Out-Null
+          Get-Content C:\sbmtest\progress.log -ErrorAction SilentlyContinue | Out-File results\progress-func.log -Encoding utf8
+          Get-Content C:\sbmui\progress.log -ErrorAction SilentlyContinue | Out-File results\progress-ui.log -Encoding utf8
           if (Test-Path C:\sbmtest\report.md) { Copy-Item C:\sbmtest\report.md results\report-func.md; Get-Content C:\sbmtest\report.md | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
           if (Test-Path C:\sbmui\report.md) { Copy-Item C:\sbmui\report.md results\report-ui.md; Get-Content C:\sbmui\report.md | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
           Copy-Item C:\sbmui\*.png results\ui\ -ErrorAction SilentlyContinue
@@ -95,17 +97,19 @@ jobs:
       - name: 上傳測試結果到 test-results 分支
         if: always()
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          $d = Join-Path $env:RUNNER_TEMP 'tr'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item results\* $d -Recurse -Force
+          Set-Location $d
+          git init -q
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          Copy-Item results $env:RUNNER_TEMP\results -Recurse
-          git checkout --orphan test-results
-          git rm -rf . -q
-          Remove-Item * -Recurse -Force -Exclude .git -ErrorAction SilentlyContinue
-          Copy-Item $env:RUNNER_TEMP\results\* . -Recurse
           git add -A
           git commit -q -m "測試結果 #$env:GITHUB_RUN_NUMBER ($env:GITHUB_SHA)"
-          git push -f origin test-results
+          git push -f "https://x-access-token:$env:GH_TOKEN@github.com/$env:GITHUB_REPOSITORY.git" HEAD:refs/heads/test-results
 
       - name: 判定
         if: always()
