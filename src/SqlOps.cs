@@ -278,6 +278,7 @@ namespace SqlBackupManager
         readonly string share;
         bool restoreAdv, restoreCmd, connected;
         public readonly List<string> Output = new List<string>();
+        public string UsedUser;   // 實際連線成功的帳號寫法
 
         public SqlNetUse(ConnectionSettings conn, string uncPath, string user, string password)
         {
@@ -289,13 +290,42 @@ namespace SqlBackupManager
             try
             {
                 Run("net use \"" + share + "\" /delete /y");   // 先清掉舊連線 (避免 1219：同一台伺服器不同帳號)
-                var outp = Run(string.IsNullOrWhiteSpace(user)
-                    ? "net use \"" + share + "\" /persistent:no"
-                    : "net use \"" + share + "\" \"" + password + "\" /user:\"" + user + "\" /persistent:no");
-                string all = string.Join(" ", outp);
-                bool ok = outp.Any(l => l.IndexOf("successfully", StringComparison.OrdinalIgnoreCase) >= 0 || l.Contains("成功"));
-                if (!ok) throw new Exception("SQL Server 無法連線到 " + share + "：" + (all.Trim() == "" ? "(沒有回應)" : all.Trim()));
-                connected = true;
+                // 帳號只寫「knox」時，NAS / 別台電腦常要求「主機名稱\帳號」：失敗 (1312 / 1326) 就自動再試一次
+                var candidates = new List<string> { user ?? "" };
+                string shareHost = share.TrimStart('\\').Split('\\')[0];
+                if (!string.IsNullOrWhiteSpace(user) && user.IndexOf('\\') < 0 && user.IndexOf('@') < 0) candidates.Add(shareHost + "\\" + user);
+                string all = "";
+                foreach (var u in candidates)
+                {
+                    var outp = Run(string.IsNullOrWhiteSpace(u)
+                        ? "net use \"" + share + "\" /persistent:no"
+                        : "net use \"" + share + "\" \"" + password + "\" /user:\"" + u + "\" /persistent:no");
+                    all = string.Join(" ", outp).Trim();
+                    if (outp.Any(l => l.IndexOf("successfully", StringComparison.OrdinalIgnoreCase) >= 0 || l.Contains("成功"))) { connected = true; UsedUser = u; break; }
+                    Run("net use \"" + share + "\" /delete /y");
+                }
+                if (!connected)
+                {
+                    string hint = "";
+                    if (all.Contains("1312"))
+                    {
+                        // 1312 最常見原因：SQL 主機開啟了「不允許存放網路驗證的密碼與認證」原則 (DisableDomainCreds)
+                        bool policy = false;
+                        try
+                        {
+                            using (var cn = SqlOps.Open(conn))
+                            using (var c = new SqlCommand("DECLARE @v int; EXEC master.dbo.xp_regread N'HKEY_LOCAL_MACHINE', N'SYSTEM\\CurrentControlSet\\Control\\Lsa', N'disabledomaincreds', @v OUTPUT; SELECT ISNULL(@v, 0);", cn))
+                                policy = Convert.ToInt32(c.ExecuteScalar()) == 1;
+                        }
+                        catch { }
+                        string host = NetPath.HostOf(conn.Server);
+                        hint = policy
+                            ? "\n【原因】SQL 主機 " + host + " 開啟了安全性原則「網路存取: 不允許存放網路驗證的密碼與認證」。\n【處理】在 " + host + " 執行 secpol.msc → 本機原則 → 安全性選項，把這個原則改成「已停用」，重新開機後再驗證。"
+                            : "\n【處理】1. 網路帳號改成「" + shareHost + "\\帳號」格式再驗證。\n2. 若仍失敗，在 SQL 主機 " + host + " 執行 secpol.msc → 本機原則 → 安全性選項，確認「網路存取: 不允許存放網路驗證的密碼與認證」為「已停用」，並重新開機。";
+                    }
+                    else if (all.Contains("1326")) hint = "\n【處理】帳號或密碼錯誤：請確認 NAS 帳號密碼，帳號可試試「" + shareHost + "\\帳號」格式。";
+                    throw new Exception("SQL Server 無法連線到 " + share + "（已試帳號：" + string.Join("、", candidates) + "）：" + (all == "" ? "(沒有回應)" : all) + hint);
+                }
             }
             catch { Dispose(); throw; }
         }

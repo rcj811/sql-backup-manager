@@ -273,7 +273,9 @@ namespace SqlBackupManager
                         Thread.Sleep(1100);
                         var r = BackupEngine.RunJob(j);
                         Assert(!r.Ok, "竟然成功");
-                        return r.Entries.First(e => e.Status == LogEntry.Failed).Message;
+                        string m = r.Entries.First(e => e.Status == LogEntry.Failed).Message;
+                        Assert(m.Contains("已試帳號") && m.Contains("【處理】"), "錯誤訊息沒有處理說明：" + m);
+                        return m.Replace("\n", " ");
                     }
                     finally { NetPath.ForceRemote = false; }
                 });

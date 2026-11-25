@@ -433,7 +433,9 @@ namespace SqlBackupManager
                     {
                         netVerified = msg == null; netVerifiedFor = netVerified ? key : "";
                         lblNetResult.ForeColor = netVerified ? Theme.Success : Theme.Danger;
-                        lblNetResult.Text = netVerified ? "✔ 驗證成功：可以寫入 " + string.Join("、", paths) + (relay ? (relayMode == 1 ? "；SQL 主機中轉正常" : "；SQL Server 已實際寫入 NAS 測試成功") : "") : "✖ 驗證失敗：" + msg;
+                        lblNetResult.Text = netVerified ? "✔ 驗證成功：可以寫入 " + string.Join("、", paths) + (relay ? (relayMode == 1 ? "；SQL 主機中轉正常" : "；SQL Server 已實際寫入 NAS 測試成功") : "") : "✖ 驗證失敗：" + msg.Split('\n')[0];
+                        // 失敗原因與處理方式可能很長，另外跳出完整說明
+                        if (!netVerified) MessageBox.Show(this, msg, "驗證網路路徑失敗", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }));
                 }
                 catch { }
