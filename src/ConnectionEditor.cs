@@ -174,6 +174,8 @@ namespace SqlBackupManager
             txtUser.Text = sql.User; txtPwd.Text = sql.Password; numTimeout.Value = Math.Max(5, Math.Min(120, sql.ConnectTimeoutSec)); txtPkg.Text = sql.SqlPackagePath;
             txtUser.Enabled = txtPwd.Enabled = !sql.UseWindowsAuth;
             UpdateWhere();
+            // 在另一台電腦卻不是 sa → 已自動改成 sa，需要重新驗證
+            if (IsRemote && (sql.UseWindowsAuth || !sql.User.Equals("sa", StringComparison.OrdinalIgnoreCase))) verified = false;
             tHost.Text = tool.Host; tPort.Value = Math.Max(1, Math.Min(65535, tool.Port <= 0 ? DefaultPort(e) : tool.Port)); tUser.Text = tool.User; tPwd.Text = tool.Password; tBin.Text = tool.BinDir;
             loading = false;
             Verified = verified;

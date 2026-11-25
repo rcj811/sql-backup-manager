@@ -523,6 +523,7 @@ namespace SqlBackupManager
                     var ce = je2.Controls[0].Controls[0].Controls.OfType<ConnectionEditor>().FirstOrDefault();
                     Assert(ce != null && ce.IsRemote, "沒有判斷出 SQL Server 在另一台電腦");
                     Assert(!ce.SqlConn.UseWindowsAuth && ce.SqlConn.User == "sa", "沒有自動切換成 sa 帳號");
+                    Assert(!ce.Verified, "自動改成 sa 後應要求重新驗證");
                     var ov2 = FindOverlaps(je2).ToList();
                     je2.Close(); NetPath.ForceRemote = false;
                     var ov = FindOverlaps(je).Concat(FindOverlaps(f)).Concat(ov2).Distinct().ToList();
