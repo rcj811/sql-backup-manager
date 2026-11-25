@@ -29,6 +29,12 @@ namespace SqlBackupManager
         readonly TextBox tHost = new TextBox(), tUser = new TextBox(), tPwd = new TextBox { UseSystemPasswordChar = true }, tBin = new TextBox();
         readonly NumericUpDown tPort = new NumericUpDown { Minimum = 1, Maximum = 65535 };
         readonly Label lblResult = new Label { AutoSize = false, UseMnemonic = false };
+        readonly Label lblWhere = new Label { AutoSize = false, UseMnemonic = false };
+        readonly Timer whereTimer = new Timer { Interval = 600 };
+        bool remote;
+
+        /// <summary>SQL Server 是否在另一台電腦 (本機電腦名稱 ≠ SQL 主機名稱)。</summary>
+        public bool IsRemote { get { return Engine == DbEngine.SqlServer && remote; } }
         readonly Button btnTest;
         bool loading;
 
@@ -41,6 +47,10 @@ namespace SqlBackupManager
             var f = new FieldLayout(pSql, 0, 0, 140);
             f.Row("伺服器執行個體", cbServer, 280);
             var detect = f.Beside(cbServer, Theme.Btn("偵測本機"));
+            lblWhere.Font = Theme.F(9.5f);
+            f.Row(null, lblWhere, 680);
+            lblWhere.Height = TextRenderer.MeasureText("國\n國", lblWhere.Font).Height + Theme.S(4);
+            f.Y = lblWhere.Bottom + Theme.S(6);
             f.RowMany("驗證方式", rbWin, rbSql);
             f.Row("帳號", txtUser, 220);
             f.Row("密碼", txtPwd, 220, "以 DPAPI 加密儲存於本機");
@@ -69,7 +79,10 @@ namespace SqlBackupManager
                 if (list.Count > 0) cbServer.DroppedDown = true;
                 else MessageBox.Show("本機找不到 SQL Server 執行個體，請手動輸入，例如：\nSERVER\\SQLEXPRESS、192.168.1.10,1433", "偵測", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
-            rbWin.CheckedChanged += (s, e) => { txtUser.Enabled = txtPwd.Enabled = rbSql.Checked; Invalidate_(); };
+            rbWin.CheckedChanged += (s, e) => { ApplyAuthUi(); Invalidate_(); };
+            cbServer.TextChanged += (s, e) => { whereTimer.Stop(); whereTimer.Start(); };
+            cbServer.SelectedIndexChanged += (s, e) => UpdateWhere();
+            whereTimer.Tick += (s, e) => { whereTimer.Stop(); UpdateWhere(); };
             foreach (Control c in new Control[] { cbServer, txtUser, txtPwd, txtPkg, tHost, tUser, tPwd, tBin })
                 c.TextChanged += (s, e) => Invalidate_();
             numTimeout.ValueChanged += (s, e) => Invalidate_();
@@ -110,6 +123,49 @@ namespace SqlBackupManager
             lblResult.ForeColor = c; lblResult.Text = text; DoLayout();
         }
 
+        /// <summary>
+        /// 比對本機電腦名稱與 SQL Server 主機名稱：不同 = SQL 在另一台電腦，
+        /// 這時只能用 SQL Server 驗證的 sa 帳號 (備份到 NAS 需要讓 SQL Server 自己連線，需 sysadmin)。
+        /// </summary>
+        void UpdateWhere()
+        {
+            string srv = cbServer.Text.Trim();
+            string host = NetPath.HostOf(srv);
+            remote = srv != "" && !NetPath.IsLocalServer(srv);
+            if (srv == "") { lblWhere.Text = ""; }
+            else if (remote)
+            {
+                lblWhere.ForeColor = Theme.Warning;
+                lblWhere.Text = "本機電腦：" + Environment.MachineName + "　｜　SQL Server 主機：" + host + "　→ SQL Server 在另一台電腦\n" +
+                                "只能使用 sa 帳號進行備份（已自動切換為 SQL Server 驗證，請輸入 sa 的密碼）";
+            }
+            else
+            {
+                lblWhere.ForeColor = Theme.Success;
+                lblWhere.Text = "本機電腦：" + Environment.MachineName + "　｜　SQL Server 主機：" + host + "　→ SQL Server 在這台電腦";
+            }
+            ApplyAuthUi();
+        }
+
+        void ApplyAuthUi()
+        {
+            if (IsRemote)
+            {
+                bool was = loading; loading = true;
+                if (!rbSql.Checked) rbSql.Checked = true;
+                if (txtUser.Text != "sa") txtUser.Text = "sa";
+                loading = was;
+                rbWin.Enabled = false;
+                txtUser.Enabled = false;
+                txtPwd.Enabled = true;
+            }
+            else
+            {
+                rbWin.Enabled = true;
+                txtUser.Enabled = txtPwd.Enabled = rbSql.Checked;
+            }
+        }
+
         public void Load(DbEngine e, ConnectionSettings sql, ToolConnection tool, bool verified)
         {
             loading = true;
@@ -117,6 +173,7 @@ namespace SqlBackupManager
             cbServer.Text = sql.Server; rbWin.Checked = sql.UseWindowsAuth; rbSql.Checked = !sql.UseWindowsAuth;
             txtUser.Text = sql.User; txtPwd.Text = sql.Password; numTimeout.Value = Math.Max(5, Math.Min(120, sql.ConnectTimeoutSec)); txtPkg.Text = sql.SqlPackagePath;
             txtUser.Enabled = txtPwd.Enabled = !sql.UseWindowsAuth;
+            UpdateWhere();
             tHost.Text = tool.Host; tPort.Value = Math.Max(1, Math.Min(65535, tool.Port <= 0 ? DefaultPort(e) : tool.Port)); tUser.Text = tool.User; tPwd.Text = tool.Password; tBin.Text = tool.BinDir;
             loading = false;
             Verified = verified;
@@ -168,6 +225,10 @@ namespace SqlBackupManager
         {
             var e = Engine; var sql = SqlConn; var tool = ToolConn;
             if (e == DbEngine.SqlServer ? sql.Server == "" : tool.Host == "") { SetResult("請先輸入伺服器", Theme.Danger); return; }
+            UpdateWhere();
+            if (IsRemote && (sql.UseWindowsAuth || !sql.User.Equals("sa", StringComparison.OrdinalIgnoreCase)))
+            { SetResult("SQL Server 在另一台電腦，只能使用 sa 帳號：請選「SQL Server 驗證」並輸入 sa 的密碼", Theme.Danger); return; }
+            sql = SqlConn;
             btnTest.Enabled = false;
             SetResult("連線中…", Theme.SubText);
             Task.Run(() =>

@@ -426,7 +426,6 @@ namespace SqlBackupManager
             Theme.Danger_(btnRestore);
             fl.Buttons(btnRestore);
             opt.Height = fl.Y + Theme.S(4);
-            int optW = opt.Controls.Cast<Control>().Max(c => c.Left + (c.AutoSize ? c.PreferredSize.Width : c.Width)) + Theme.S(40);
 
             chkStopAt.CheckedChanged += (s, e) => dtStop.Enabled = chkStopAt.Checked;
             txtTarget.TextChanged += (s, e) => UpdateButton();

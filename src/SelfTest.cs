@@ -164,9 +164,9 @@ namespace SqlBackupManager
                 return st.Count + " 個步驟：" + string.Join(" → ", st.Select(x => x.Text).Take(5));
             });
             Check("差異備份", () => { Insert(50); return RunOk(NewJob("測試-差異", BackupKind.Differential, local)); });
-            int countLog1 = 0, countAtT1 = 0, countLog2 = 0;
+            int countAtT1 = 0, countLog2 = 0;
             DateTime t1 = DateTime.MinValue;
-            Check("交易記錄備份 #1", () => { Insert(30); countLog1 = Count(Db); return RunOk(NewJob("測試-記錄", BackupKind.Log, local)); });
+            Check("交易記錄備份 #1", () => { Insert(30); return RunOk(NewJob("測試-記錄", BackupKind.Log, local)); });
             Check("交易記錄備份 #2 (中間記下時間點)", () =>
             {
                 Insert(20); countAtT1 = Count(Db);
@@ -512,7 +512,20 @@ namespace SqlBackupManager
                     var tabs = (TabControl)je.Controls[0];
                     string[] tn = { "連線", "備份內容", "存放位置", "排程" };
                     for (int t = 0; t < 4; t++) { tabs.SelectedIndex = t; Pump(600); Shot(je, fs + "pt_job_" + (t + 1) + "_" + tn[t] + ".png"); }
-                    var ov = FindOverlaps(je).Concat(FindOverlaps(f)).Distinct().ToList();
+                    // SQL Server 在另一台電腦的畫面 (強制 sa、簡化的 NAS 說明)
+                    NetPath.ForceRemote = true;
+                    var rj = js[1].Clone(); rj.SqlConn.Server = @"chin-sys\SQLEXPRESS"; rj.SqlConn.UseWindowsAuth = true; rj.SqlConn.User = "admin";
+                    var je2 = new JobEditForm(rj, null) { StartPosition = FormStartPosition.Manual, Location = new Point(60, 60) };
+                    je2.Show(); Pump(1500);
+                    var tabs2 = (TabControl)je2.Controls[0];
+                    tabs2.SelectedIndex = 0; Pump(600); Shot(je2, fs + "pt_remote_1_連線.png");
+                    tabs2.SelectedIndex = 2; Pump(600); Shot(je2, fs + "pt_remote_3_存放位置.png");
+                    var ce = je2.Controls[0].Controls[0].Controls.OfType<ConnectionEditor>().FirstOrDefault();
+                    Assert(ce != null && ce.IsRemote, "沒有判斷出 SQL Server 在另一台電腦");
+                    Assert(!ce.SqlConn.UseWindowsAuth && ce.SqlConn.User == "sa", "沒有自動切換成 sa 帳號");
+                    var ov2 = FindOverlaps(je2).ToList();
+                    je2.Close(); NetPath.ForceRemote = false;
+                    var ov = FindOverlaps(je).Concat(FindOverlaps(f)).Concat(ov2).Distinct().ToList();
                     je.Close(); f.RebuildUi(); Pump(300);
                     Assert(ov.Count == 0, "發現重疊：" + string.Join("；", ov.Take(8)));
                     return "已截圖，沒有發現文字重疊";

@@ -156,16 +156,12 @@ namespace SqlBackupManager
             pnlHost.Location = new Point(0, netHostTop); pnlHost.Width = Theme.S(820);
             var fh = new FieldLayout(pnlHost, 20, 0, 160);
             fh.Section("SQL Server 在另一台電腦");
-            lblHostInfo.Font = Theme.F(9f); lblHostInfo.ForeColor = Theme.SubText;
+            lblHostInfo.Font = Theme.F(9.5f); lblHostInfo.ForeColor = Theme.Text;
             fh.Row(null, lblHostInfo, 720);
-            lblHostInfo.Height = TextRenderer.MeasureText("國\n國", lblHostInfo.Font).Height + Theme.S(4);
-            fh.Y = lblHostInfo.Bottom + Theme.S(6);
-            rbNetUse = fh.Radio("由 SQL Server 用上面的網路帳號直接連線 NAS（建議；SQL 帳號需有 sysadmin 權限）", true);
-            rbRelay = fh.Radio("SQL 主機中轉：SQL Server 先備份到它本機，本程式再用下列帳號取回送到 NAS", false);
-            fh.Row("SQL 主機暫存資料夾", txtHostLocal, 300, "SQL Server 那台電腦上的路徑");
-            fh.Row("本程式存取路徑", txtHostUnc, 420);
-            fh.Row("SQL 主機帳號", txtHostUser, 260, "該電腦的 Windows 帳號，例如 chin-sys\\Administrator");
-            fh.Row("SQL 主機密碼", txtHostPwd, 260, "以 DPAPI 加密儲存於本機");
+            lblHostInfo.Height = TextRenderer.MeasureText("國\n國\n國", lblHostInfo.Font).Height + Theme.S(4);
+            fh.Y = lblHostInfo.Bottom + Theme.S(8);
+            // 簡化：固定由 SQL Server 自己用 NAS 帳號連線 (不再讓使用者選擇；主機中轉保留在程式中但不顯示)
+            rbNetUse = new RadioButton { Checked = true }; rbRelay = new RadioButton();
             pnlHost.Height = fh.Y;
             rbNetUse.CheckedChanged += (s, e) => { UpdateRelayFields(); InvalidateNet(); };
             pnlNet.Controls.Add(pnlHost);
@@ -374,7 +370,9 @@ namespace SqlBackupManager
             if (relay)
             {
                 string host = NetPath.HostOf(conn.SqlConn.Server);
-                lblHostInfo.Text = "SQL Server 在 " + host + "，備份檔由 " + host + " 的 SQL 服務帳戶寫入，它預設無法登入 NAS（作業系統錯誤 1326 / 5）。\n請選擇處理方式（主機中轉使用 C$ 系統分享時，帳號需為 " + host + " 的系統管理員）：";
+                lblHostInfo.Text = "本機電腦：" + Environment.MachineName + "　｜　SQL Server 主機：" + host + "\n" +
+                    "備份時會讓 SQL Server 用上面的網路帳號直接連線 NAS（只能用 sa 帳號，請在「1. 連線」頁設定）。\n" +
+                    "按「驗證網路路徑」會讓 SQL Server 實際寫一個測試檔到 NAS。";
                 if (txtHostLocal.Text.Trim() == "")
                 {
                     string def = !string.IsNullOrEmpty(conn.DefaultBackupDir) ? conn.DefaultBackupDir.Substring(0, 2) + "\\SqlBackupStage" : "C:\\SqlBackupStage";
@@ -392,7 +390,9 @@ namespace SqlBackupManager
                     string unc = NetPath.ToUnc(p);
                     sb.Append("\n  • ").Append(unc).Append(unc != p ? "（" + p.Substring(0, 2) + " 已自動轉換成網路路徑）" : "");
                 }
-                sb.Append("\n備份時會先寫到 SQL Server 本機，再用下面的帳號複製過去。");
+                sb.Append(Engine == DbEngine.SqlServer && Kind != BackupKind.Bacpac && !NetPath.IsLocalServer(conn.SqlConn.Server)
+                    ? "\n請輸入可以寫入 NAS 的帳號密碼。"
+                    : "\n備份時會先寫到 SQL Server 本機，再用下面的帳號複製過去。");
                 lblNetInfo.Text = sb.ToString();
             }
             InvalidateNet();
@@ -516,7 +516,7 @@ namespace SqlBackupManager
             j.NetUser = txtNetUser.Text.Trim(); j.NetPassword = txtNetPwd.Text;
             j.SqlConn.HostStageLocal = txtHostLocal.Text.Trim(); j.SqlConn.HostStageUnc = txtHostUnc.Text.Trim();
             j.SqlConn.HostUser = txtHostUser.Text.Trim(); j.SqlConn.HostPassword = txtHostPwd.Text;
-            j.SqlConn.RemoteNetMode = rbRelay.Checked ? 1 : 0; j.NetVerified = NetPaths().Count == 0 || netVerified;
+            j.SqlConn.RemoteNetMode = 0; j.NetVerified = NetPaths().Count == 0 || netVerified;
             j.RetentionDays = (int)numRetention.Value;
             j.Verify = chkVerify.Checked; j.Checksum = chkChecksum.Checked; j.Compression = chkCompress.Checked; j.ZipAfterBackup = chkZip.Checked;
             j.CopyOnly = chkCopyOnly.Checked; j.FallbackToFull = chkFallback.Checked;
@@ -568,7 +568,7 @@ namespace SqlBackupManager
             hostUncAuto = true; txtHostLocal.Text = j.SqlConn.HostStageLocal; txtHostUnc.Text = j.SqlConn.HostStageUnc; hostUncAuto = false;
             hostUncEdited = j.SqlConn.HostStageUnc != "" && j.SqlConn.HostStageUnc != NetPath.AdminShare(NetPath.HostOf(j.SqlConn.Server), j.SqlConn.HostStageLocal);
             txtHostUser.Text = j.SqlConn.HostUser; txtHostPwd.Text = j.SqlConn.HostPassword;
-            rbRelay.Checked = j.SqlConn.RemoteNetMode == 1; rbNetUse.Checked = !rbRelay.Checked; UpdateRelayFields();
+            rbNetUse.Checked = true; rbRelay.Checked = false;
             txtSecondary.Text = j.SecondaryPath;
             netLoading = false;
             netVerified = j.NetVerified && NetPaths().Count > 0;
@@ -601,6 +601,7 @@ namespace SqlBackupManager
             if (name == "") { err = "請輸入工作名稱。"; tab = 0; }
             else if (SettingsStore.Current.Jobs.Any(x => x != original && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) { err = "已有相同名稱的工作，請換一個名稱（命令列 --run 會用名稱找工作）。"; tab = 0; }
             else if (!conn.Verified) { err = "連線尚未驗證成功。\n請在「1. 連線」頁按「測試連線」，成功後才能儲存。"; tab = 0; }
+            else if (conn.IsRemote && !conn.SqlConn.User.Equals("sa", StringComparison.OrdinalIgnoreCase)) { err = "SQL Server 在另一台電腦，只能使用 sa 帳號進行備份。"; tab = 0; }
             else if (txtPath.Text.Trim() == "") { err = "請指定備份資料夾（可按「瀏覽…」選擇，或按「用伺服器預設」）。"; tab = 2; }
 
             else if (BackupEngine.IsUrl(txtPath.Text.Trim()) && (Engine != DbEngine.SqlServer || Kind == BackupKind.Bacpac)) { err = "只有 SQL Server 原生備份可以備份到 URL。"; tab = 2; }

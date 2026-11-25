@@ -82,10 +82,11 @@ SQL Server 的備份檔是由 **SQL Server 服務帳戶**寫入的，它預設�
 | SQL Server 在哪裡 | 做法 |
 |---|---|
 | 和本程式同一台電腦 | SQL 先備份到本機暫存 (`C:\ProgramData\SqlBackupManager\stage`)，本程式再用 NAS 帳號複製過去 |
-| 另一台電腦（建議） | 讓 SQL Server 自己用 NAS 帳號連線（`xp_cmdshell net use`，Microsoft 文件記載的做法），直接備份到 NAS；xp_cmdshell 原本關閉的話用完會自動關回。SQL 帳號需有 sysadmin |
-| 另一台電腦（主機中轉） | SQL 先備份到它自己電腦的資料夾，本程式用該電腦的 Windows 帳號經 `\\主機\C$` 取回再送到 NAS |
+| 另一台電腦 | 讓 SQL Server 自己用 NAS 帳號連線（`xp_cmdshell net use`，Microsoft 文件記載的做法），直接備份到 NAS；xp_cmdshell 原本關閉的話用完會自動關回。SQL 帳號需有 sysadmin |
 
 還原時，NAS 上的備份檔也用同樣方式讀取。
+
+> 程式會比對「本機電腦名稱」和「SQL Server 主機名稱」：不同就代表 SQL Server 在另一台電腦，這時**只能使用 sa 帳號**（自動切換為 SQL Server 驗證）。
 
 ### 重要：資料夾權限
 SQL Server 的備份檔是由 **SQL Server 服務帳戶** 寫入的，不是你登入的 Windows 帳號。
