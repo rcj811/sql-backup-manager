@@ -527,6 +527,9 @@ namespace SqlBackupManager
                     Assert(!ce.SqlConn.UseWindowsAuth && ce.SqlConn.User == "sa", "沒有自動切換成 sa 帳號");
                     Assert(!ce.Verified, "自動改成 sa 後應要求重新驗證");
                     var ov2 = FindOverlaps(je2).ToList();
+                    string fixedUser = je2.FixNetUser("knox");
+                    Assert(fixedUser == "knox_nas\\knox", "帳號沒有自動補主機名稱：" + fixedUser);
+                    Assert(je2.FixNetUser(@"knox_nas\knox") == @"knox_nas\knox" && je2.FixNetUser("a@b.com") == "a@b.com", "不該更動已有格式的帳號");
                     je2.Close(); NetPath.ForceRemote = false;
                     var ov = FindOverlaps(je).Concat(FindOverlaps(f)).Concat(ov2).Distinct().ToList();
                     je.Close(); f.RebuildUi(); Pump(300);

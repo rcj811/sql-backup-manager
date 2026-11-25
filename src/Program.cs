@@ -9,8 +9,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("SQL Server / MySQL / PostgreSQL 排程備份與還原")]
 [assembly: AssemblyCompany("")]
 [assembly: AssemblyCopyright("")]
-[assembly: AssemblyVersion("1.5.2.0")]
-[assembly: AssemblyFileVersion("1.5.2.0")]
+[assembly: AssemblyVersion("1.5.3.0")]
+[assembly: AssemblyFileVersion("1.5.3.0")]
 
 namespace SqlBackupManager
 {

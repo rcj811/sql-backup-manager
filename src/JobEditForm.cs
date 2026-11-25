@@ -148,7 +148,7 @@ namespace SqlBackupManager
             fn0.Row(null, lblNetInfo, 720);
             lblNetInfo.Height = TextRenderer.MeasureText("國\n國\n國\n國", lblNetInfo.Font).Height + Theme.S(4);
             fn0.Y = lblNetInfo.Bottom + Theme.S(6);
-            fn0.Row("網路帳號", txtNetUser, 260, "例如 NAS\\admin；空白 = 目前登入的帳號");
+            fn0.Row("網路帳號", txtNetUser, 260, "只輸入帳號，離開時自動補成「主機名稱\\帳號」");
             fn0.Row("網路密碼", txtNetPwd, 260, "以 DPAPI 加密儲存於本機");
             netHostTop = fn0.Y;
 
@@ -230,6 +230,7 @@ namespace SqlBackupManager
             txtPath.TextChanged += (s, e) => OnPathsChanged();
             txtSecondary.TextChanged += (s, e) => OnPathsChanged();
             txtNetUser.TextChanged += (s, e) => InvalidateNet();
+            txtNetUser.Leave += (s, e) => txtNetUser.Text = FixNetUser(txtNetUser.Text);
             txtNetPwd.TextChanged += (s, e) => InvalidateNet();
 
 
@@ -352,6 +353,20 @@ namespace SqlBackupManager
             return list;
         }
 
+        /// <summary>
+        /// 帳號只寫「knox」時補成「knox_nas\knox」(取網路路徑的主機名稱)；
+        /// NAS / 別台電腦常要求這個格式，否則會出現系統錯誤 1312。已有 \ 或 @ 的不動。
+        /// </summary>
+        public string FixNetUser(string user)
+        {
+            string u = (user ?? "").Trim();
+            if (u == "" || u.IndexOf('\\') >= 0 || u.IndexOf('@') >= 0) return u;
+            var nets = NetPaths();
+            if (nets.Count == 0) return u;
+            string host = nets[0].TrimStart('\\').Split('\\')[0];
+            return host == "" ? u : host + "\\" + u;
+        }
+
         string NetKey()
         {
             string k = string.Join("|", NetPaths()).ToLowerInvariant() + "|" + txtNetUser.Text.Trim().ToLowerInvariant() + "|" + txtNetPwd.Text;
@@ -410,6 +425,7 @@ namespace SqlBackupManager
         {
             var paths = NetPaths();
             if (paths.Count == 0) return;
+            txtNetUser.Text = FixNetUser(txtNetUser.Text);
             string user = txtNetUser.Text.Trim(), pwd = txtNetPwd.Text, key = NetKey();
             bool relay = NeedRelay;
             var sqlConn = conn.SqlConn;
