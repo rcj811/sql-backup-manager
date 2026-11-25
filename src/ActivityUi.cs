@@ -39,6 +39,7 @@ namespace SqlBackupManager
     public class ActivityBanner : Panel
     {
         readonly Label lbl = new Label { AutoSize = false, UseMnemonic = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Cursor = Cursors.Hand };
+        readonly ToolTip tip = new ToolTip();
         readonly Label pct = new Label { AutoSize = false, UseMnemonic = false, TextAlign = ContentAlignment.MiddleRight, Cursor = Cursors.Hand };
         readonly ProgBar bar = new ProgBar { Cursor = Cursors.Hand };
         readonly Button btn = Theme.Btn("查看明細");
@@ -71,7 +72,10 @@ namespace SqlBackupManager
             int barW = Theme.S(220);
             pct.Size = new Size(Theme.S(56), h); pct.Location = new Point(btn.Left - Theme.S(12) - pct.Width, 0);
             bar.Size = new Size(barW, Theme.S(10)); bar.Location = new Point(pct.Left - Theme.S(8) - barW, (h - bar.Height) / 2);
-            lbl.Location = new Point(pad, 0); lbl.Size = new Size(Math.Max(10, bar.Left - pad - Theme.S(16)), h);
+            // 單行顯示，太長用「…」省略 (不折行)
+            int lh = TextRenderer.MeasureText("國", lbl.Font).Height + Theme.S(2);
+            lbl.Size = new Size(Math.Max(10, bar.Left - pad - Theme.S(16)), lh);
+            lbl.Location = new Point(pad, (h - lh) / 2);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -89,6 +93,7 @@ namespace SqlBackupManager
                 BackColor = Color.FromArgb(232, 242, 253);
                 lbl.ForeColor = Theme.Accent; pct.ForeColor = Theme.Accent; bar.Fill = Theme.Accent;
                 lbl.Text = "● 執行中　" + Activity.Title + "　｜　" + Activity.CurrentText + (Activity.UnitText != "" ? "　（" + Activity.UnitText + "）" : "");
+                tip.SetToolTip(lbl, lbl.Text);
                 int o = Activity.Overall;
                 bar.Marquee = false; bar.Value = o; pct.Text = o + "%";
                 if (!Visible) Visible = true;
