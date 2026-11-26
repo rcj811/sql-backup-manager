@@ -188,9 +188,9 @@ namespace SqlBackupManager
         {
             for (int i = 0; i < pages.Count; i++) { navs[i].Selected = i == idx; navs[i].Invalidate(); }
             current = pages[idx];
-            current.RefreshData();
             current.Visible = true;
             current.BringToFront();
+            current.RefreshData();
             foreach (var p in pages) if (p != current) p.Visible = false;
             lblTitle.Text = current.Title;
         }

@@ -796,6 +796,8 @@ namespace SqlBackupManager
         public void RunQuery() { queried = true; Query(); }
         public int RunCount { get { return current.Count; } }
         public bool HasRows { get { return gridRuns.Rows.Count > 0; } }
+        public int DetailCount { get { return gridDetail.Rows.Count; } }
+        public void SelectRun(int i) { gridRuns.CurrentCell = gridRuns.Rows[i].Cells[0]; }
 
         void Query()
         {
@@ -814,9 +816,12 @@ namespace SqlBackupManager
                 int r = gridRuns.Rows.Add(g.Start.ToString("yyyy/MM/dd HH:mm:ss"), g.Job == "" ? "(系統)" : g.Job, g.Kind, g.Status == LogEntry.Info ? "" : g.Status,
                     string.Join("、", g.Databases), Fmt.Size(g.SizeBytes), Fmt.Duration(g.DurationSec), g.Summary);
                 gridRuns.Rows[r].Tag = g;
-                if (g.Id == selId) gridRuns.CurrentCell = gridRuns.Rows[r].Cells[0];
             }
             gridRuns.ResumeLayout();
+            // 保留原本點選的那一筆 (切換頁面回來、或有新日誌自動更新時不會跳掉)
+            if (selId != null)
+                foreach (DataGridViewRow row in gridRuns.Rows)
+                    if (((LogGroup)row.Tag).Id == selId) { try { gridRuns.CurrentCell = row.Cells[0]; } catch { } break; }
             lblEmpty.Text = current.Count == 0 ? "沒有符合條件的日誌" : "";
             gridRuns.Invalidate();
             lblCount.Text = string.Format("共 {0} 次執行　成功 {1}　失敗 {2}　警告 {3}（日誌 {4} 筆）", current.Count, current.Count(g => g.Status == LogEntry.Success),
