@@ -52,7 +52,7 @@ namespace SqlBackupManager
             var res = new JobResult { Job = job };
             Gate.Wait();
             Busy = true;
-            Activity.Begin("備份：" + job.Name, 1);
+            Activity.Begin("備份：" + job.Name, 1, job.Name);
             try
             {
                 Report("開始執行工作：" + job.Name, -1);
@@ -827,8 +827,10 @@ namespace SqlBackupManager
         static int units = 1, unit;
         static readonly Regex Pct = new Regex(@"\s+\d{1,3}%$");
 
-        public static void Begin(string title, int u)
+        public static void Begin(string title, int u, string job = null)
         {
+            Logger.CurrentRunJob = job;
+            Logger.CurrentRunId = job == null ? null : DateTime.Now.ToString("yyyyMMddHHmmss") + Guid.NewGuid().ToString("N").Substring(0, 6);
             lock (L) { Title = title; Start = DateTime.Now; Running = true; Result = Summary = ""; steps.Clear(); units = Math.Max(1, u); unit = 0; }
         }
         public static void SetUnits(int u) { lock (L) units = Math.Max(1, u); }
@@ -856,6 +858,7 @@ namespace SqlBackupManager
                 steps.Add(new ActivityStep { Time = DateTime.Now, Text = (result == LogEntry.Failed ? "結束（有錯誤）：" : "完成：") + summary, Done = true });
                 Running = false; Result = result; Summary = summary; End = DateTime.Now; unit = units;
             }
+            Logger.CurrentRunId = null; Logger.CurrentRunJob = null;
         }
 
         /// <summary>整體百分比 = (已完成的資料庫 + 目前這個的進度) / 總數。</summary>

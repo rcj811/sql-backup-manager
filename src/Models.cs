@@ -258,6 +258,19 @@ namespace SqlBackupManager
         public List<BackupJob> Jobs = new List<BackupJob>();
     }
 
+    /// <summary>一次執行的整合紀錄：同一個 RunId 的日誌合在一起。</summary>
+    public class LogGroup
+    {
+        public string Id;
+        public DateTime Start, End;
+        public string Job = "", Kind = "", Status = "";
+        public List<string> Databases = new List<string>();
+        public long SizeBytes;
+        public double DurationSec;
+        public string Summary = "";
+        public List<LogEntry> Entries = new List<LogEntry>();   // 依時間先後
+    }
+
     public class LogEntry
     {
         public DateTime Time;
@@ -269,6 +282,7 @@ namespace SqlBackupManager
         public long SizeBytes;
         public double DurationSec;
         public string Message = "";
+        public string RunId = "";    // 同一次執行 (一個工作 / 一次還原) 的所有紀錄共用同一個 Id
 
         public const string Success = "成功", Failed = "失敗", Warning = "警告", Info = "資訊";
     }

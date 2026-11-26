@@ -190,13 +190,17 @@ namespace SqlBackupManager
             return sb.ToString();
         }
 
+        /// <summary>目前執行中的作業 (由 Activity.Begin 設定)；同一工作寫入的日誌自動帶上同一個 RunId。</summary>
+        public static volatile string CurrentRunId, CurrentRunJob;
+
         public static void Write(LogEntry e)
         {
             if (e.Time == default(DateTime)) e.Time = DateTime.Now;
+            if (string.IsNullOrEmpty(e.RunId) && CurrentRunId != null && e.Job == CurrentRunJob) e.RunId = CurrentRunId;
             string line = string.Join("\t", new[] {
                 e.Time.ToString("yyyy-MM-dd HH:mm:ss"), Esc(e.Job), Esc(e.Database), Esc(e.Kind), Esc(e.Status),
                 Esc(e.File), e.SizeBytes.ToString(CultureInfo.InvariantCulture),
-                e.DurationSec.ToString("0.0", CultureInfo.InvariantCulture), Esc(e.Message) });
+                e.DurationSec.ToString("0.0", CultureInfo.InvariantCulture), Esc(e.Message), Esc(e.RunId) });
             lock (Sync)
             {
                 try { File.AppendAllText(Path.Combine(AppPaths.LogDir, "backup_" + e.Time.ToString("yyyyMM") + ".log"), line + Environment.NewLine, Encoding.UTF8); }
@@ -225,7 +229,7 @@ namespace SqlBackupManager
                         long size; double dur;
                         long.TryParse(p[6], NumberStyles.Any, CultureInfo.InvariantCulture, out size);
                         double.TryParse(p[7], NumberStyles.Any, CultureInfo.InvariantCulture, out dur);
-                        list.Add(new LogEntry { Time = t, Job = Unesc(p[1]), Database = Unesc(p[2]), Kind = Unesc(p[3]), Status = Unesc(p[4]), File = Unesc(p[5]), SizeBytes = size, DurationSec = dur, Message = Unesc(p[8]) });
+                        list.Add(new LogEntry { Time = t, Job = Unesc(p[1]), Database = Unesc(p[2]), Kind = Unesc(p[3]), Status = Unesc(p[4]), File = Unesc(p[5]), SizeBytes = size, DurationSec = dur, Message = Unesc(p[8]), RunId = p.Length > 9 ? Unesc(p[9]) : "" });
                     }
                 }
             }
@@ -244,6 +248,54 @@ namespace SqlBackupManager
             var h = EntryAdded;
             if (h != null) try { h(new LogEntry { Time = DateTime.Now, Status = LogEntry.Info }); } catch { }
             return n;
+        }
+
+        /// <summary>
+        /// 把日誌整合成「一次執行一筆」：相同 RunId 合併；舊版沒有 RunId 的，
+        /// 同一工作、前後間隔 2 分鐘內的連續紀錄視為同一次。回傳新到舊排序，每組內依時間先後。
+        /// </summary>
+        public static List<LogGroup> Group(List<LogEntry> entries)
+        {
+            var groups = new List<LogGroup>();
+            var byId = new Dictionary<string, LogGroup>();
+            LogGroup legacy = null;
+            foreach (var e in entries.OrderBy(x => x.Time))
+            {
+                LogGroup g;
+                if (!string.IsNullOrEmpty(e.RunId))
+                {
+                    if (!byId.TryGetValue(e.RunId, out g)) { g = new LogGroup { Id = e.RunId, Job = e.Job }; byId[e.RunId] = g; groups.Add(g); }
+                }
+                else
+                {
+                    if (legacy == null || legacy.Job != e.Job || (e.Time - legacy.Entries.Last().Time).TotalSeconds > 120)
+                    {
+                        legacy = new LogGroup { Id = "L" + groups.Count, Job = e.Job };
+                        groups.Add(legacy);
+                    }
+                    g = legacy;
+                }
+                g.Entries.Add(e);
+            }
+            foreach (var g in groups)
+            {
+                var es = g.Entries;
+                g.Start = es.First().Time;
+                g.End = es.Last().Time;
+                g.Kind = es.Select(x => x.Kind).FirstOrDefault(k => !string.IsNullOrEmpty(k) && k != "清理") ?? "";
+                g.Status = es.Any(x => x.Status == LogEntry.Failed) ? LogEntry.Failed
+                         : es.Any(x => x.Status == LogEntry.Warning) ? LogEntry.Warning
+                         : es.Any(x => x.Status == LogEntry.Success) ? LogEntry.Success : LogEntry.Info;
+                g.Databases = es.Where(x => !string.IsNullOrEmpty(x.Database) && x.Database != "(伺服器)").Select(x => x.Database).Distinct().ToList();
+                g.SizeBytes = es.Where(x => x.Status == LogEntry.Success && x.Kind != "清理").Sum(x => x.SizeBytes);
+                g.DurationSec = Math.Max(es.Where(x => x.Status != LogEntry.Info).Sum(x => x.DurationSec), (g.End - g.Start).TotalSeconds);
+                int ok = es.Count(x => x.Status == LogEntry.Success), fail = es.Count(x => x.Status == LogEntry.Failed), warn = es.Count(x => x.Status == LogEntry.Warning);
+                var firstFail = es.FirstOrDefault(x => x.Status == LogEntry.Failed);
+                if (firstFail != null) g.Summary = "失敗 " + fail + "：" + (string.IsNullOrEmpty(firstFail.Database) ? "" : firstFail.Database + " ") + firstFail.Message.Split('\n')[0];
+                else if (ok > 0) g.Summary = "成功 " + ok + (warn > 0 ? "、警告 " + warn : "") + "：" + string.Join("、", es.Where(x => x.Status == LogEntry.Success && !string.IsNullOrEmpty(x.Database)).Select(x => x.Database + (x.SizeBytes > 0 ? " " + Fmt.Size(x.SizeBytes) : "")).Distinct());
+                else g.Summary = es.Last().Message.Split('\n')[0];
+            }
+            return groups.OrderByDescending(x => x.Start).ToList();
         }
 
         public static void Cleanup(int keepDays)

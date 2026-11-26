@@ -182,6 +182,8 @@ namespace SqlBackupManager
             else { activityForm.WindowState = FormWindowState.Normal; activityForm.Activate(); }
         }
 
+        public Page CurrentPage { get { return current; } }
+
         public void ShowPage(int idx)
         {
             for (int i = 0; i < pages.Count; i++) { navs[i].Selected = i == idx; navs[i].Invalidate(); }

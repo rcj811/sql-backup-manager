@@ -176,7 +176,7 @@ namespace SqlBackupManager
             string db = plan.TargetDb.Trim();
             BackupEngine.Gate.Wait();
             BackupEngine.Busy = true;
-            Activity.Begin("還原：" + db, 1);
+            Activity.Begin("還原：" + db, 1, "還原");
             bool ok2 = false;
             var sw = Stopwatch.StartNew();
             string how = first.Engine == DbEngine.SqlServer ? "BACPAC 匯入" : first.Engine == DbEngine.MySql ? "MySQL 還原" : "PostgreSQL 還原";
@@ -264,7 +264,7 @@ namespace SqlBackupManager
 
             BackupEngine.Gate.Wait();
             BackupEngine.Busy = true;
-            Activity.Begin("還原：" + db, plan.Chain.Count);
+            Activity.Begin("還原：" + db, plan.Chain.Count, "還原");
             bool ok = false;
             SqlNetUse netSession = null;
             var sw = Stopwatch.StartNew();

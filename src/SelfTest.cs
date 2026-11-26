@@ -454,6 +454,21 @@ namespace SqlBackupManager
                 });
             }
 
+            Check("日誌整合：同一次執行合成一筆", () =>
+            {
+                var groups = Logger.Group(Logger.Read(DateTime.Today.AddDays(-1), DateTime.Now.AddMinutes(1)));
+                var full = groups.Where(g => g.Job == "測試-完整").ToList();
+                Assert(full.Count == 1, "「測試-完整」執行 1 次，卻整合成 " + full.Count + " 筆");
+                var g1 = full[0];
+                Assert(g1.Status == LogEntry.Success && g1.Databases.Contains(Db), "結果不正確：" + g1.Status);
+                Assert(g1.Entries.Count >= 2 && g1.Entries.Select(e => e.RunId).Distinct().Count() == 1, "明細沒有合在同一次執行");
+                Assert(g1.Entries.Zip(g1.Entries.Skip(1), (a, b) => a.Time <= b.Time).All(x => x), "明細順序不是依時間先後");
+                var logRuns = groups.Count(g => g.Job == "測試-記錄");
+                Assert(logRuns == 2, "「測試-記錄」執行 2 次，卻整合成 " + logRuns + " 筆");
+                var restores = groups.Where(g => g.Job == "還原").ToList();
+                Assert(restores.Count >= 5 && restores.All(g => g.Entries.Select(e => e.RunId).Distinct().Count() == 1), "還原紀錄沒有各自整合");
+                return groups.Count + " 次執行（原始日誌 " + groups.Sum(g => g.Entries.Count) + " 筆）｜完整備份那次含 " + g1.Entries.Count + " 筆明細";
+            });
             Check("日誌：全部清除", () =>
             {
                 Assert(Logger.Read(DateTime.Today.AddDays(-1), DateTime.Now.AddMinutes(1)).Count > 0, "清除前沒有日誌");
@@ -509,6 +524,24 @@ namespace SqlBackupManager
                     Activity.Finish(LogEntry.Success, "成功 3、失敗 0、警告 0");
                     Pump(800);
                     Shot(f, fs + "pt_9_完成狀態列.png");
+                    // 備份日誌：一開始不顯示，查詢後才出現，且同一次執行合成一筆
+                    Logger.ClearAll();
+                    for (int k = 0; k < 2; k++)
+                    {
+                        string jn = js[k].Name;
+                        Activity.Begin("備份：" + jn, 1, jn);
+                        Logger.Write(new LogEntry { Job = jn, Kind = "完整備份", Status = LogEntry.Info, Message = "Express Edition 不支援原生備份壓縮" });
+                        Logger.Write(new LogEntry { Job = jn, Kind = "完整備份", Status = LogEntry.Info, Message = "SQL Server 在 chin-sys：已讓 SQL Server 連線 NAS" });
+                        Logger.Write(new LogEntry { Job = jn, Database = "NACC", Kind = "完整備份", Status = LogEntry.Success, SizeBytes = 102563840, DurationSec = 3, File = @"\\knox_nas\mydisk\SQLBackup\NACC\NACC_FULL_20261126_190259.bak", Message = "已驗證" });
+                        Activity.Finish(LogEntry.Success, "成功 1、失敗 0、警告 0");
+                    }
+                    f.ShowPage(3); Pump(600);
+                    var lp = (LogPage)f.CurrentPage;
+                    Assert(!lp.HasRows, "日誌頁一開始就顯示了資料");
+                    Shot(f, fs + "pt_4a_日誌未查詢.png");
+                    lp.RunQuery(); Pump(600);
+                    Assert(lp.RunCount == 2, "兩次執行應整合成 2 筆，實際 " + lp.RunCount);
+                    Shot(f, fs + "pt_4b_日誌查詢後.png");
                     var je = new JobEditForm(js[1].Clone(), js[1]) { StartPosition = FormStartPosition.Manual, Location = new Point(40, 40) };
                     je.Show(); Pump(800);
                     var tabs = (TabControl)je.Controls[0];

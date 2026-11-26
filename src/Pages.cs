@@ -139,7 +139,7 @@ namespace SqlBackupManager
             grid.Columns.AddRange(Theme.Col("時間", 16, 150), Theme.Col("工作", 16), Theme.Col("資料庫", 16), Theme.Col("類型", 12), Theme.Col("狀態", 8, 56), Theme.Col("大小", 10), Theme.Col("訊息", 40));
             ColorStatus(grid, 4);
 
-            Stack(Toolbar(run, check, refresh), tiles, mid, GridCard("最近活動", grid));
+            Stack(Toolbar(run, check, refresh), tiles, mid, GridCard("最近執行（每次執行一筆）", grid));
         }
 
         public override void RefreshData()
@@ -153,7 +153,8 @@ namespace SqlBackupManager
 
             var logs = Logger.Read(DateTime.Now.AddDays(-30), DateTime.Now);
             var day = logs.Where(l => l.Time >= DateTime.Now.AddHours(-24)).ToList();
-            int ok = day.Count(l => l.Status == LogEntry.Success), fail = day.Count(l => l.Status == LogEntry.Failed), warn = day.Count(l => l.Status == LogEntry.Warning);
+            var dayRuns = Logger.Group(day);
+            int ok = dayRuns.Count(g => g.Status == LogEntry.Success), fail = dayRuns.Count(g => g.Status == LogEntry.Failed), warn = dayRuns.Count(g => g.Status == LogEntry.Warning);
             long bytes = day.Where(l => l.Status == LogEntry.Success).Sum(l => l.SizeBytes);
             tOk.Set(ok.ToString(), "備份量 " + (bytes > 0 ? Fmt.Size(bytes) : "0"));
             tFail.Set(fail + " / " + warn, fail > 0 ? "請查看備份日誌" : "狀態良好", fail > 0 ? Theme.Danger : warn > 0 ? Theme.Warning : Theme.Success);
@@ -168,8 +169,8 @@ namespace SqlBackupManager
             }
 
             grid.Rows.Clear();
-            foreach (var l in logs.Take(30))
-                grid.Rows.Add(l.Time.ToString("yyyy/MM/dd HH:mm:ss"), l.Job, l.Database, l.Kind, l.Status, Fmt.Size(l.SizeBytes), l.Message);
+            foreach (var g in Logger.Group(logs).Take(20))
+                grid.Rows.Add(g.Start.ToString("yyyy/MM/dd HH:mm:ss"), g.Job == "" ? "(系統)" : g.Job, string.Join("、", g.Databases), g.Kind, g.Status == LogEntry.Info ? "" : g.Status, Fmt.Size(g.SizeBytes), g.Summary);
             RefreshDisks();
         }
 
@@ -692,19 +693,26 @@ namespace SqlBackupManager
     }
 
     // ───────────────────────── 備份日誌 ─────────────────────────
+    /// <summary>
+    /// 上：每次執行一筆 (同一個工作的同一次備份 / 還原合在一起)；下：該次執行依時間先後的明細。
+    /// 進入頁面時不顯示，按「查詢」後才載入。
+    /// </summary>
     public class LogPage : Page
     {
         readonly DateTimePicker dtFrom = Date(130), dtTo = Date(130);
         readonly ComboBox cbStatus = Combo(100);
-        readonly TextBox txtSearch = Box(180);
-        readonly DataGridView grid = new DataGridView();
+        readonly ComboBox cbJob = Combo(180);
+        readonly TextBox txtSearch = Box(160);
+        readonly DataGridView gridRuns = new DataGridView(), gridDetail = new DataGridView();
         readonly Label lblCount = new Label { AutoSize = true, UseMnemonic = false };
-        List<LogEntry> current = new List<LogEntry>();
+        readonly Label lblEmpty = new Label { AutoSize = false, UseMnemonic = false, TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Fill };
+        List<LogGroup> current = new List<LogGroup>();
+        bool queried;
 
         public LogPage(MainForm m) : base(m, "備份日誌")
         {
             dtFrom.Value = DateTime.Today.AddDays(-7); dtTo.Value = DateTime.Today;
-            cbStatus.Items.AddRange(new object[] { "全部", LogEntry.Success, LogEntry.Failed, LogEntry.Warning, LogEntry.Info });
+            cbStatus.Items.AddRange(new object[] { "全部", LogEntry.Success, LogEntry.Failed, LogEntry.Warning });
             cbStatus.SelectedIndex = 0;
             var query = Theme.Btn("查詢", true);
             var export = Theme.Btn("匯出 CSV");
@@ -715,62 +723,122 @@ namespace SqlBackupManager
             {
                 if (MessageBox.Show("確定要清除「全部」備份日誌嗎？\n\n所有日期的紀錄都會刪除，無法復原。\n（不會刪除備份檔）", "全部清除", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
                 int n = Logger.ClearAll();
-                RefreshData();
+                queried = false; RefreshData();
                 Main.SetStatus("已清除 " + n + " 個日誌檔", 0);
             };
-            query.Click += (s, e) => RefreshData();
-            txtSearch.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; RefreshData(); } };
+            query.Click += (s, e) => { queried = true; Query(); };
+            txtSearch.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; queried = true; Query(); } };
             export.Click += (s, e) => Export();
             open.Click += (s, e) => Process.Start("explorer.exe", AppPaths.LogDir);
 
-            var bar = Toolbar(Theme.Lbl("日期"), dtFrom, Theme.Lbl("至"), dtTo, Theme.Lbl("狀態"), cbStatus, Theme.Lbl("關鍵字"), txtSearch, query, export, open, clear);
+            var bar = Toolbar(Theme.Lbl("日期"), dtFrom, Theme.Lbl("至"), dtTo, Theme.Lbl("工作"), cbJob, Theme.Lbl("結果"), cbStatus, Theme.Lbl("關鍵字"), txtSearch, query, export, open, clear);
             lblCount.Font = Theme.F(9f); lblCount.ForeColor = Theme.SubText;
             var countHost = new Panel { Height = TextRenderer.MeasureText("國", lblCount.Font).Height + Theme.S(4) };
             countHost.Controls.Add(lblCount);
 
-            grid.Columns.AddRange(Theme.Col("時間", 13, 150), Theme.Col("工作", 12), Theme.Col("資料庫", 11), Theme.Col("類型", 9), Theme.Col("狀態", 6, 56), Theme.Col("大小", 7), Theme.Col("耗時", 7), Theme.Col("訊息", 25), Theme.Col("檔案", 20));
-            ColorStatus(grid, 4);
-            grid.CellDoubleClick += (s, e) =>
+            gridRuns.Columns.AddRange(Theme.Col("開始時間", 14, 150), Theme.Col("工作", 14), Theme.Col("類型", 10), Theme.Col("結果", 7, 60), Theme.Col("資料庫", 12), Theme.Col("備份量", 9), Theme.Col("耗時", 8), Theme.Col("摘要", 36));
+            ColorStatus(gridRuns, 3);
+            gridDetail.Columns.AddRange(Theme.Col("時間", 10, 90), Theme.Col("資料庫", 11), Theme.Col("狀態", 7, 56), Theme.Col("大小", 8), Theme.Col("耗時", 8), Theme.Col("內容", 36), Theme.Col("檔案", 20));
+            ColorStatus(gridDetail, 2);
+            gridRuns.SelectionChanged += (s, e) => ShowDetail();
+            gridDetail.CellDoubleClick += (s, e) =>
             {
                 if (e.RowIndex < 0) return;
-                var l = grid.Rows[e.RowIndex].Tag as LogEntry;
+                var l = gridDetail.Rows[e.RowIndex].Tag as LogEntry;
                 if (l == null) return;
                 MessageBox.Show(string.Format("時間：{0:yyyy/MM/dd HH:mm:ss}\n工作：{1}\n資料庫：{2}\n類型：{3}\n狀態：{4}\n檔案：{5}\n大小：{6}\n耗時：{7}\n\n{8}",
                     l.Time, l.Job, l.Database, l.Kind, l.Status, l.File, Fmt.Size(l.SizeBytes), Fmt.Duration(l.DurationSec), l.Message), "日誌明細");
             };
-            Stack(bar, countHost, GridCard(null, grid));
+
+            var runsCard = GridCard("執行紀錄（每次執行一筆，點選查看明細）", gridRuns);
+            lblEmpty.Font = Theme.F(10f); lblEmpty.ForeColor = Theme.SubText; lblEmpty.BackColor = Color.White;
+            lblEmpty.Text = "請設定日期、工作或結果等條件後，按「查詢」顯示日誌";
+            runsCard.Body.Controls.Add(lblEmpty); lblEmpty.BringToFront();
+            var detailCard = GridCard("本次執行明細（依時間先後）", gridDetail);
+            var split = new TableLayoutPanel { ColumnCount = 1, RowCount = 2, BackColor = Color.Transparent, Margin = new Padding(0) };
+            split.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
+            split.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+            runsCard.Dock = DockStyle.Fill; detailCard.Dock = DockStyle.Fill;
+            runsCard.Margin = new Padding(0, 0, 0, Theme.S(12)); detailCard.Margin = new Padding(0);
+            split.Controls.Add(runsCard, 0, 0); split.Controls.Add(detailCard, 0, 1);
+            Stack(bar, countHost, split);
         }
 
+        /// <summary>切換到本頁或有新日誌時：還沒查詢過就保持空白；查詢過就用相同條件重新整理。</summary>
         public override void RefreshData()
         {
-            var list = Logger.Read(dtFrom.Value.Date, dtTo.Value.Date.AddDays(1).AddSeconds(-1));
-            string st = cbStatus.SelectedIndex > 0 ? (string)cbStatus.SelectedItem : null;
-            string q = txtSearch.Text.Trim();
-            current = list.Where(l => (st == null || l.Status == st) &&
-                (q == "" || (l.Job + l.Database + l.Message + l.File + l.Kind).IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)).ToList();
-            grid.SuspendLayout();
-            grid.Rows.Clear();
-            foreach (var l in current.Take(5000))
+            string sel = cbJob.SelectedItem as string;
+            cbJob.Items.Clear(); cbJob.Items.Add("全部");
+            foreach (var j in SettingsStore.Current.Jobs.Select(x => x.Name).Concat(new[] { "還原" }).Distinct()) cbJob.Items.Add(j);
+            int ix = sel == null ? 0 : cbJob.Items.IndexOf(sel);
+            cbJob.SelectedIndex = ix >= 0 ? ix : 0;
+            if (queried) Query();
+            else
             {
-                int r = grid.Rows.Add(l.Time.ToString("yyyy/MM/dd HH:mm:ss"), l.Job, l.Database, l.Kind, l.Status, Fmt.Size(l.SizeBytes), Fmt.Duration(l.DurationSec), l.Message, l.File);
-                grid.Rows[r].Tag = l;
+                current = new List<LogGroup>();
+                gridRuns.Rows.Clear(); gridDetail.Rows.Clear();
+                lblEmpty.Visible = true;
+                lblCount.Text = "";
             }
-            grid.ResumeLayout();
-            lblCount.Text = string.Format("共 {0} 筆　成功 {1}　失敗 {2}　警告 {3}{4}", current.Count, current.Count(l => l.Status == LogEntry.Success),
-                current.Count(l => l.Status == LogEntry.Failed), current.Count(l => l.Status == LogEntry.Warning), current.Count > 5000 ? "（僅顯示前 5000 筆）" : "");
+        }
+
+        /// <summary>等同按下「查詢」(測試用)。</summary>
+        public void RunQuery() { queried = true; Query(); }
+        public int RunCount { get { return current.Count; } }
+        public bool HasRows { get { return gridRuns.Rows.Count > 0; } }
+
+        void Query()
+        {
+            var list = Logger.Read(dtFrom.Value.Date, dtTo.Value.Date.AddDays(1).AddSeconds(-1));
+            var groups = Logger.Group(list);
+            string st = cbStatus.SelectedIndex > 0 ? (string)cbStatus.SelectedItem : null;
+            string job = cbJob.SelectedIndex > 0 ? (string)cbJob.SelectedItem : null;
+            string q = txtSearch.Text.Trim();
+            current = groups.Where(g => (st == null || g.Status == st) && (job == null || g.Job == job) &&
+                (q == "" || g.Entries.Any(l => (l.Job + l.Database + l.Message + l.File + l.Kind).IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0))).ToList();
+            string selId = gridRuns.CurrentRow != null && gridRuns.CurrentRow.Tag is LogGroup ? ((LogGroup)gridRuns.CurrentRow.Tag).Id : null;
+            gridRuns.SuspendLayout();
+            gridRuns.Rows.Clear();
+            foreach (var g in current.Take(3000))
+            {
+                int r = gridRuns.Rows.Add(g.Start.ToString("yyyy/MM/dd HH:mm:ss"), g.Job == "" ? "(系統)" : g.Job, g.Kind, g.Status == LogEntry.Info ? "" : g.Status,
+                    string.Join("、", g.Databases), Fmt.Size(g.SizeBytes), Fmt.Duration(g.DurationSec), g.Summary);
+                gridRuns.Rows[r].Tag = g;
+                if (g.Id == selId) gridRuns.CurrentCell = gridRuns.Rows[r].Cells[0];
+            }
+            gridRuns.ResumeLayout();
+            lblEmpty.Visible = current.Count == 0;
+            lblEmpty.Text = current.Count == 0 ? "沒有符合條件的日誌" : "";
+            lblCount.Text = string.Format("共 {0} 次執行　成功 {1}　失敗 {2}　警告 {3}（日誌 {4} 筆）", current.Count, current.Count(g => g.Status == LogEntry.Success),
+                current.Count(g => g.Status == LogEntry.Failed), current.Count(g => g.Status == LogEntry.Warning), current.Sum(g => g.Entries.Count));
+            ShowDetail();
+        }
+
+        void ShowDetail()
+        {
+            gridDetail.Rows.Clear();
+            var g = gridRuns.CurrentRow == null ? null : gridRuns.CurrentRow.Tag as LogGroup;
+            if (g == null) return;
+            foreach (var l in g.Entries)
+            {
+                int r = gridDetail.Rows.Add(l.Time.ToString("HH:mm:ss"), l.Database, l.Status, Fmt.Size(l.SizeBytes), Fmt.Duration(l.DurationSec), l.Message, l.File);
+                gridDetail.Rows[r].Tag = l;
+            }
         }
 
         void Export()
         {
+            if (current.Count == 0) { MessageBox.Show("請先查詢，再匯出查詢結果。", "匯出 CSV", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             using (var d = new SaveFileDialog { Filter = "CSV 檔 (*.csv)|*.csv", FileName = "備份日誌_" + DateTime.Now.ToString("yyyyMMdd") + ".csv" })
             {
                 if (d.ShowDialog() != DialogResult.OK) return;
                 Func<string, string> c = s => "\"" + (s ?? "").Replace("\"", "\"\"") + "\"";
-                var sb = new StringBuilder("時間,工作,資料庫,類型,狀態,檔案,大小(Bytes),耗時(秒),訊息\r\n");
-                foreach (var l in current)
-                    sb.Append(string.Join(",", c(l.Time.ToString("yyyy/MM/dd HH:mm:ss")), c(l.Job), c(l.Database), c(l.Kind), c(l.Status), c(l.File), l.SizeBytes, l.DurationSec.ToString("0.0"), c(l.Message))).Append("\r\n");
+                var sb = new StringBuilder("執行開始,工作,執行結果,時間,資料庫,類型,狀態,檔案,大小(Bytes),耗時(秒),內容\r\n");
+                foreach (var g in current)
+                    foreach (var l in g.Entries)
+                        sb.Append(string.Join(",", c(g.Start.ToString("yyyy/MM/dd HH:mm:ss")), c(g.Job), c(g.Status), c(l.Time.ToString("yyyy/MM/dd HH:mm:ss")), c(l.Database), c(l.Kind), c(l.Status), c(l.File), l.SizeBytes, l.DurationSec.ToString("0.0"), c(l.Message))).Append("\r\n");
                 File.WriteAllText(d.FileName, sb.ToString(), new UTF8Encoding(true));
-                Main.SetStatus("已匯出 " + current.Count + " 筆到 " + d.FileName, 0);
+                Main.SetStatus("已匯出 " + current.Count + " 次執行到 " + d.FileName, 0);
             }
         }
     }
