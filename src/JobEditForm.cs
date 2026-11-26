@@ -29,11 +29,12 @@ namespace SqlBackupManager
 
         readonly TextBox txtPath = new TextBox(), txtSecondary = new TextBox(), txtMirror = new TextBox(), txtCert = new TextBox();
         readonly Panel pnlNet = new Panel { BackColor = Color.FromArgb(247, 250, 255), Visible = false }, pnlRest = new Panel { BackColor = Color.White };
-        readonly TextBox txtNetUser = new TextBox(), txtNetPwd = new TextBox { UseSystemPasswordChar = true };
+        readonly TextBox txtNetUser = new TextBox();
+        readonly PasswordBox txtNetPwd = new PasswordBox(), txtHostPwd = new PasswordBox();
         readonly Label lblNetInfo = new Label { AutoSize = false, UseMnemonic = false }, lblNetResult = new Label { AutoSize = false, UseMnemonic = false };
         int restTopNoNet, netHostTop;
         readonly Panel pnlHost = new Panel { BackColor = Color.FromArgb(247, 250, 255) }, pnlNetBottom = new Panel { BackColor = Color.FromArgb(247, 250, 255) };
-        readonly TextBox txtHostLocal = new TextBox(), txtHostUnc = new TextBox(), txtHostUser = new TextBox(), txtHostPwd = new TextBox { UseSystemPasswordChar = true };
+        readonly TextBox txtHostLocal = new TextBox(), txtHostUnc = new TextBox(), txtHostUser = new TextBox();
         readonly Label lblHostInfo = new Label { AutoSize = false, UseMnemonic = false };
         bool hostUncEdited, hostUncAuto;
         RadioButton rbNetUse, rbRelay;
@@ -144,12 +145,8 @@ namespace SqlBackupManager
             pnlNet.Location = new Point(0, f2.Y); pnlNet.Width = Theme.S(820);
             var fn0 = new FieldLayout(pnlNet, 20, 0, 140);
             fn0.Section("網路位置驗證");
-            lblNetInfo.Font = Theme.F(9f); lblNetInfo.ForeColor = Theme.SubText;
-            fn0.Row(null, lblNetInfo, 720);
-            lblNetInfo.Height = TextRenderer.MeasureText("國\n國\n國\n國", lblNetInfo.Font).Height + Theme.S(4);
-            fn0.Y = lblNetInfo.Bottom + Theme.S(6);
-            fn0.Row("網路帳號", txtNetUser, 260, "只輸入帳號，離開時自動補成「主機名稱\\帳號」");
-            fn0.Row("網路密碼", txtNetPwd, 260, "以 DPAPI 加密儲存於本機");
+            fn0.Row("網路帳號", txtNetUser, 260);
+            fn0.Row("網路密碼", txtNetPwd, 260);
             netHostTop = fn0.Y;
 
             // SQL 主機中轉 (SQL Server 在別台電腦時才顯示)
@@ -316,7 +313,8 @@ namespace SqlBackupManager
 
             LoadFromJob();
             loaded = true;
-            Shown += (s, e) => conn.Test();   // 開啟時自動驗證一次並載入資料庫清單
+            // 開啟時若已有伺服器名稱，自動驗證一次並載入資料庫清單 (失敗不跳視窗)
+            Shown += (s, e) => { if (conn.SqlConn.Server != "" || Engine != DbEngine.SqlServer) conn.Test(false); };
         }
 
         TabPage Tab(string t) { return new TabPage(t) { BackColor = Color.White, AutoScroll = true, Padding = new Padding(Theme.S(4)) }; }
@@ -379,8 +377,8 @@ namespace SqlBackupManager
             var nets = NetPaths();
             bool show = nets.Count > 0;
             bool relay = show && NeedRelay;
-            pnlHost.Visible = relay;
-            pnlNetBottom.Top = relay ? pnlHost.Bottom : netHostTop;
+            pnlHost.Visible = false;   // 簡化：不顯示 SQL 主機說明
+            pnlNetBottom.Top = netHostTop;
             pnlNet.Height = pnlNetBottom.Bottom;
             if (relay)
             {
@@ -582,10 +580,10 @@ namespace SqlBackupManager
             lblDbStatus.Text = "測試連線後載入清單";
             txtPath.Text = (j.TargetPath ?? "").Trim();
             netLoading = true;
-            txtNetUser.Text = j.NetUser; txtNetPwd.Text = j.NetPassword;
+            txtNetUser.Text = j.NetUser; txtNetPwd.SetSaved(j.NetPassword);
             hostUncAuto = true; txtHostLocal.Text = j.SqlConn.HostStageLocal; txtHostUnc.Text = j.SqlConn.HostStageUnc; hostUncAuto = false;
             hostUncEdited = j.SqlConn.HostStageUnc != "" && j.SqlConn.HostStageUnc != NetPath.AdminShare(NetPath.HostOf(j.SqlConn.Server), j.SqlConn.HostStageLocal);
-            txtHostUser.Text = j.SqlConn.HostUser; txtHostPwd.Text = j.SqlConn.HostPassword;
+            txtHostUser.Text = j.SqlConn.HostUser; txtHostPwd.SetSaved(j.SqlConn.HostPassword);
             rbNetUse.Checked = true; rbRelay.Checked = false;
             txtSecondary.Text = j.SecondaryPath;
             netLoading = false;

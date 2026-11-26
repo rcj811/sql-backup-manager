@@ -318,10 +318,9 @@ namespace SqlBackupManager
             BackupJob work;
             if (isNew)
             {
+                // 新工作：伺服器名稱保持空白，由使用者自己輸入
                 work = new BackupJob { Name = UniqueName("每日完整備份"), ConnSet = true };
-                // 預設帶入最近一個工作的連線，方便同一台伺服器建立多個工作 (仍需重新驗證)
-                var last = SettingsStore.Current.Jobs.LastOrDefault();
-                if (last != null) { work.Engine = last.Engine; work.SqlConn = last.SqlConn.Copy(); work.ToolConn = last.ToolConn.Copy(); work.Kind = BackupJob.KindsFor(last.Engine)[0]; }
+                work.SqlConn = new ConnectionSettings { Server = "" };
             }
             else work = job.Clone();
             using (var f = new JobEditForm(work, job))
@@ -780,7 +779,8 @@ namespace SqlBackupManager
     public class NotifyPage : Page
     {
         CheckBox chkEnabled, chkSsl, chkSuccess, chkFail;
-        readonly TextBox txtHost = new TextBox(), txtUser = new TextBox(), txtPwd = new TextBox { UseSystemPasswordChar = true }, txtFrom = new TextBox(), txtTo = new TextBox();
+        readonly TextBox txtHost = new TextBox(), txtUser = new TextBox(), txtFrom = new TextBox(), txtTo = new TextBox();
+        readonly PasswordBox txtPwd = new PasswordBox();
         readonly NumericUpDown numPort = new NumericUpDown { Minimum = 1, Maximum = 65535 };
 
         public NotifyPage(MainForm m) : base(m, "通知設定")
@@ -802,7 +802,7 @@ namespace SqlBackupManager
             var test = Theme.Btn("寄送測試信"); var save = Theme.Btn("儲存", true);
             fl.Buttons(save, test);
             stack.AddCard(card, fl.Y);
-            save.Click += (s, e) => { Collect(); SettingsStore.Save(); Main.SetStatus("通知設定已儲存", 0); };
+            save.Click += (s, e) => { Collect(); SettingsStore.Save(); txtPwd.SetSaved(SettingsStore.Current.Mail.Password); Main.SetStatus("通知設定已儲存", 0); };
             test.Click += (s, e) =>
             {
                 Collect();
@@ -832,7 +832,7 @@ namespace SqlBackupManager
         {
             var mm = SettingsStore.Current.Mail;
             chkEnabled.Checked = mm.Enabled; txtHost.Text = mm.Host; numPort.Value = Math.Max(1, Math.Min(65535, mm.Port)); chkSsl.Checked = mm.EnableSsl;
-            txtUser.Text = mm.User; txtPwd.Text = mm.Password; txtFrom.Text = mm.From; txtTo.Text = mm.To;
+            txtUser.Text = mm.User; txtPwd.SetSaved(mm.Password); txtFrom.Text = mm.From; txtTo.Text = mm.To;
             chkSuccess.Checked = mm.NotifyOnSuccess; chkFail.Checked = mm.NotifyOnFailure;
         }
     }

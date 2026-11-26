@@ -501,3 +501,79 @@ namespace SqlBackupManager
         }
     }
 }
+
+namespace SqlBackupManager
+{
+    /// <summary>
+    /// 密碼欄位 + 「顯示」按鈕。
+    /// 新輸入的密碼可以按「顯示」確認；從設定檔載入的「已儲存密碼」不能顯示，
+    /// 要重新輸入 (一打字就會清掉舊密碼) 之後才能顯示。
+    /// </summary>
+    public class PasswordBox : Panel
+    {
+        readonly TextBox tb = new TextBox { UseSystemPasswordChar = true };
+        readonly Button eye = new Button { FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, BackColor = System.Drawing.Color.White, Cursor = Cursors.Hand, TabStop = false };
+        readonly ToolTip tip = new ToolTip();
+        bool locked, shown;
+
+        public PasswordBox()
+        {
+            BackColor = System.Drawing.Color.Transparent;
+            tb.Font = Theme.F(9.5f);
+            eye.Font = Theme.F(9f);
+            eye.FlatAppearance.BorderColor = Theme.Border;
+            eye.Text = "顯示";
+            Height = tb.PreferredHeight;
+            eye.Size = new System.Drawing.Size(TextRenderer.MeasureText("隱藏", eye.Font).Width + Theme.S(18), Height);
+            Controls.Add(tb); Controls.Add(eye);
+            Resize += (s, e) => Lay();
+            tb.TextChanged += (s, e) => OnTextChanged(EventArgs.Empty);
+            eye.Click += (s, e) => { if (locked) return; shown = !shown; tb.UseSystemPasswordChar = !shown; eye.Text = shown ? "隱藏" : "顯示"; tb.Focus(); tb.SelectionStart = tb.TextLength; };
+            // 已儲存的密碼：一開始輸入 (或刪除、貼上) 就清掉，改成新密碼
+            tb.KeyDown += (s, e) =>
+            {
+                if (!locked) return;
+                bool edit = e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete || (e.Control && e.KeyCode == Keys.V);
+                if (edit) { Unlock(); if (e.KeyCode != Keys.V) e.SuppressKeyPress = true; }
+            };
+            tb.KeyPress += (s, e) => { if (locked && !char.IsControl(e.KeyChar)) Unlock(); };
+            UpdateEye();
+            Lay();
+        }
+
+        void Unlock() { locked = false; tb.Text = ""; UpdateEye(); }
+
+        /// <summary>目前是「已儲存、不能顯示」的密碼。</summary>
+        public bool Locked { get { return locked; } }
+        public bool CanReveal { get { return eye.Enabled; } }
+
+        void Lay()
+        {
+            eye.Height = Height;
+            eye.Location = new System.Drawing.Point(Width - eye.Width, 0);
+            tb.Location = new System.Drawing.Point(0, 0);
+            tb.Width = Math.Max(Theme.S(40), Width - eye.Width - Theme.S(4));
+        }
+
+        void UpdateEye()
+        {
+            if (locked) { shown = false; tb.UseSystemPasswordChar = true; eye.Text = "顯示"; }
+            eye.Enabled = !locked && Enabled;
+            eye.ForeColor = locked ? Theme.SubText : Theme.Text;
+            tip.SetToolTip(eye, locked ? "已儲存的密碼無法顯示；重新輸入後可以按「顯示」確認" : "顯示 / 隱藏密碼");
+            tip.SetToolTip(tb, locked ? "已儲存的密碼（重新輸入會取代）" : "");
+        }
+
+        /// <summary>載入已儲存的密碼 (不能顯示)。</summary>
+        public void SetSaved(string password)
+        {
+            tb.Text = password ?? "";
+            locked = tb.Text != "";
+            UpdateEye();
+        }
+
+        public override string Text { get { return tb.Text; } set { tb.Text = value ?? ""; } }
+
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); UpdateEye(); }
+    }
+}

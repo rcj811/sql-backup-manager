@@ -524,9 +524,18 @@ namespace SqlBackupManager
                     tabs2.SelectedIndex = 2; Pump(600); Shot(je2, fs + "pt_remote_3_存放位置.png");
                     var ce = je2.Controls[0].Controls[0].Controls.OfType<ConnectionEditor>().FirstOrDefault();
                     Assert(ce != null && ce.IsRemote, "沒有判斷出 SQL Server 在另一台電腦");
+                    var newJob = new BackupJob { ConnSet = true }; newJob.SqlConn = new ConnectionSettings { Server = "" };
+                    Assert(newJob.SqlConn.Server == "", "新工作的伺服器名稱不是空白");
                     Assert(!ce.SqlConn.UseWindowsAuth && ce.SqlConn.User == "sa", "沒有自動切換成 sa 帳號");
                     Assert(!ce.Verified, "自動改成 sa 後應要求重新驗證");
                     var ov2 = FindOverlaps(je2).ToList();
+                    // 密碼欄位：已儲存的不能顯示；新輸入的可以顯示
+                    var pb = new PasswordBox(); var holder = new Form(); holder.Controls.Add(pb); holder.Show(); Pump(200);
+                    pb.SetSaved("secret");
+                    Assert(pb.Locked && !pb.CanReveal && pb.Text == "secret", "已儲存的密碼竟然可以顯示");
+                    pb.SetSaved(""); pb.Text = "new";
+                    Assert(!pb.Locked && pb.CanReveal, "新輸入的密碼應該可以顯示");
+                    holder.Close();
                     string fixedUser = je2.FixNetUser("knox");
                     Assert(fixedUser == "knox_nas\\knox", "帳號沒有自動補主機名稱：" + fixedUser);
                     Assert(je2.FixNetUser(@"knox_nas\knox") == @"knox_nas\knox" && je2.FixNetUser("a@b.com") == "a@b.com", "不該更動已有格式的帳號");

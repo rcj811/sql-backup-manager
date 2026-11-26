@@ -24,9 +24,10 @@ namespace SqlBackupManager
         readonly ComboBox cbServer = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown };
         readonly RadioButton rbWin = new RadioButton { Text = "Windows 驗證", AutoSize = true, UseMnemonic = false };
         readonly RadioButton rbSql = new RadioButton { Text = "SQL Server 驗證", AutoSize = true, UseMnemonic = false };
-        readonly TextBox txtUser = new TextBox(), txtPwd = new TextBox { UseSystemPasswordChar = true }, txtPkg = new TextBox();
+        readonly TextBox txtUser = new TextBox(), txtPkg = new TextBox();
+        readonly PasswordBox txtPwd = new PasswordBox(), tPwd = new PasswordBox();
         readonly NumericUpDown numTimeout = new NumericUpDown { Minimum = 5, Maximum = 120 };
-        readonly TextBox tHost = new TextBox(), tUser = new TextBox(), tPwd = new TextBox { UseSystemPasswordChar = true }, tBin = new TextBox();
+        readonly TextBox tHost = new TextBox(), tUser = new TextBox(), tBin = new TextBox();
         readonly NumericUpDown tPort = new NumericUpDown { Minimum = 1, Maximum = 65535 };
         readonly Label lblResult = new Label { AutoSize = false, UseMnemonic = false };
         readonly Label lblWhere = new Label { AutoSize = false, UseMnemonic = false };
@@ -45,12 +46,8 @@ namespace SqlBackupManager
 
             // SQL Server
             var f = new FieldLayout(pSql, 0, 0, 140);
-            f.Row("伺服器執行個體", cbServer, 280);
+            f.Row("伺服器名稱", cbServer, 280);
             var detect = f.Beside(cbServer, Theme.Btn("偵測本機"));
-            lblWhere.Font = Theme.F(9.5f);
-            f.Row(null, lblWhere, 680);
-            lblWhere.Height = TextRenderer.MeasureText("國\n國", lblWhere.Font).Height + Theme.S(4);
-            f.Y = lblWhere.Bottom + Theme.S(6);
             f.RowMany("驗證方式", rbWin, rbSql);
             f.Row("帳號", txtUser, 220);
             f.Row("密碼", txtPwd, 220, "以 DPAPI 加密儲存於本機");
@@ -87,7 +84,9 @@ namespace SqlBackupManager
                 c.TextChanged += (s, e) => Invalidate_();
             numTimeout.ValueChanged += (s, e) => Invalidate_();
             tPort.ValueChanged += (s, e) => Invalidate_();
-            btnTest.Click += (s, e) => Test();
+            btnTest.Click += (s, e) => Test(true);
+            lblResult.Cursor = Cursors.Hand;
+            lblResult.Click += (s, e) => { if (lblResult.Text.StartsWith("✖")) ShowError(); };
             Resize += (s, e) => DoLayout();
         }
 
@@ -113,7 +112,7 @@ namespace SqlBackupManager
         {
             if (loading) return;
             if (Verified) { Verified = false; RaiseVerified(); }
-            SetResult("尚未驗證：修改連線後請按「測試連線」", Theme.Warning);
+            SetResult("尚未驗證，請按「測試連線」", Theme.Warning);
         }
 
         void RaiseVerified() { var h = VerifiedChanged; if (h != null) h(); }
@@ -171,16 +170,16 @@ namespace SqlBackupManager
             loading = true;
             Engine = e;
             cbServer.Text = sql.Server; rbWin.Checked = sql.UseWindowsAuth; rbSql.Checked = !sql.UseWindowsAuth;
-            txtUser.Text = sql.User; txtPwd.Text = sql.Password; numTimeout.Value = Math.Max(5, Math.Min(120, sql.ConnectTimeoutSec)); txtPkg.Text = sql.SqlPackagePath;
+            txtUser.Text = sql.User; txtPwd.SetSaved(sql.Password); numTimeout.Value = Math.Max(5, Math.Min(120, sql.ConnectTimeoutSec)); txtPkg.Text = sql.SqlPackagePath;
             txtUser.Enabled = txtPwd.Enabled = !sql.UseWindowsAuth;
             UpdateWhere();
             // 在另一台電腦卻不是 sa → 已自動改成 sa，需要重新驗證
             if (IsRemote && (sql.UseWindowsAuth || !sql.User.Equals("sa", StringComparison.OrdinalIgnoreCase))) verified = false;
-            tHost.Text = tool.Host; tPort.Value = Math.Max(1, Math.Min(65535, tool.Port <= 0 ? DefaultPort(e) : tool.Port)); tUser.Text = tool.User; tPwd.Text = tool.Password; tBin.Text = tool.BinDir;
+            tHost.Text = tool.Host; tPort.Value = Math.Max(1, Math.Min(65535, tool.Port <= 0 ? DefaultPort(e) : tool.Port)); tUser.Text = tool.User; tPwd.SetSaved(tool.Password); tBin.Text = tool.BinDir;
             loading = false;
             Verified = verified;
             if (verified) SetResult("✔ 已驗證", Theme.Success);
-            else SetResult("尚未驗證：請按「測試連線」，成功後才能儲存與備份", Theme.Warning);
+            else SetResult("尚未驗證，請按「測試連線」", Theme.Warning);
             DoLayout();
         }
 
@@ -199,7 +198,7 @@ namespace SqlBackupManager
             loading = false;
             Engine = e;
             Verified = false; RaiseVerified();
-            SetResult("尚未驗證：請按「測試連線」", Theme.Warning);
+            SetResult("尚未驗證，請按「測試連線」", Theme.Warning);
             DoLayout();
         }
 
@@ -223,27 +222,46 @@ namespace SqlBackupManager
             }
         }
 
-        public void Test()
+        readonly ToolTip tip = new ToolTip();
+        string lastError;
+
+        /// <summary>只顯示「✖ 連線失敗」，原因放在跳出視窗 (popup) 或點一下文字再看。</summary>
+        void Fail(string msg, bool popup = true)
+        {
+            lastError = msg;
+            SetResult("✖ 連線失敗（點此查看原因）", Theme.Danger);
+            if (popup) ShowError();
+        }
+
+        void ShowError()
+        {
+            if (string.IsNullOrEmpty(lastError)) return;
+            MessageBox.Show(FindForm(), lastError, "連線失敗", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        public void Test() { Test(true); }
+
+        public void Test(bool popup)
         {
             var e = Engine; var sql = SqlConn; var tool = ToolConn;
-            if (e == DbEngine.SqlServer ? sql.Server == "" : tool.Host == "") { SetResult("請先輸入伺服器", Theme.Danger); return; }
+            if (e == DbEngine.SqlServer ? sql.Server == "" : tool.Host == "") { if (popup) Fail("請先輸入伺服器名稱。"); return; }
             UpdateWhere();
             if (IsRemote && (sql.UseWindowsAuth || !sql.User.Equals("sa", StringComparison.OrdinalIgnoreCase)))
-            { SetResult("SQL Server 在另一台電腦，只能使用 sa 帳號：請選「SQL Server 驗證」並輸入 sa 的密碼", Theme.Danger); return; }
+            { Fail("SQL Server 在另一台電腦，只能使用 sa 帳號進行備份。\n請選「SQL Server 驗證」並輸入 sa 的密碼。", popup); return; }
             sql = SqlConn;
             btnTest.Enabled = false;
-            SetResult("連線中…", Theme.SubText);
+            SetResult("連線中…", Theme.SubText); tip.SetToolTip(lblResult, "");
             Task.Run(() =>
             {
                 try
                 {
                     List<DbInfo> dbs; string dir;
                     string info = ConnTest.Test(e, sql, tool, out dbs, out dir);
-                    UI(() => { btnTest.Enabled = true; Databases = dbs; DefaultBackupDir = dir; Verified = true; SetResult("✔ 連線成功　" + info, Theme.Success); RaiseVerified(); });
+                    UI(() => { btnTest.Enabled = true; Databases = dbs; DefaultBackupDir = dir; Verified = true; SetResult("✔ 連線成功", Theme.Success); tip.SetToolTip(lblResult, info); RaiseVerified(); });
                 }
                 catch (Exception ex)
                 {
-                    UI(() => { btnTest.Enabled = true; Verified = false; SetResult("✖ 連線失敗：" + ex.Message, Theme.Danger); RaiseVerified(); });
+                    UI(() => { btnTest.Enabled = true; Verified = false; RaiseVerified(); Fail(ex.Message, popup); });
                 }
             });
         }
