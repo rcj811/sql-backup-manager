@@ -797,6 +797,7 @@ namespace SqlBackupManager
         public int RunCount { get { return current.Count; } }
         public bool HasRows { get { return gridRuns.Rows.Count > 0; } }
         public int DetailCount { get { return gridDetail.Rows.Count; } }
+        public string SelectedRunId { get { var g = gridRuns.CurrentRow == null ? null : gridRuns.CurrentRow.Tag as LogGroup; return g == null ? null : g.Id; } }
         public void SelectRun(int i) { gridRuns.CurrentCell = gridRuns.Rows[i].Cells[0]; }
 
         void Query()

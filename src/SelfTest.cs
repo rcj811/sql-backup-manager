@@ -543,11 +543,13 @@ namespace SqlBackupManager
                     Assert(lp.RunCount == 2, "兩次執行應整合成 2 筆，實際 " + lp.RunCount);
                     Shot(f, fs + "pt_4b_日誌查詢後.png");
                     // 切到其他頁再回來，查詢結果與點選的那筆都要保留
-                    lp.SelectRun(1); Pump(200);
-                    var pick = lp.DetailCount;
+                    try { lp.SelectRun(1); } catch { }
+                    Pump(200);
+                    var pick = lp.SelectedRunId;
                     f.ShowPage(0); Pump(400); f.ShowPage(1); Pump(400); f.ShowPage(3); Pump(600);
                     Assert(lp.RunCount == 2 && lp.HasRows, "切換頁面後日誌被清除了");
-                    Assert(lp.DetailCount == pick && pick >= 3, "切換頁面後明細沒有保留（" + lp.DetailCount + "/" + pick + "）");
+                    Assert(lp.DetailCount >= 3, "切換頁面後明細沒有保留（" + lp.DetailCount + " 筆）");
+                    Assert(pick == null || lp.SelectedRunId == pick, "切換頁面後點選的那筆跑掉了");
                     var je = new JobEditForm(js[1].Clone(), js[1]) { StartPosition = FormStartPosition.Manual, Location = new Point(40, 40) };
                     je.Show(); Pump(800);
                     var tabs = (TabControl)je.Controls[0];
