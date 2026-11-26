@@ -701,7 +701,7 @@ namespace SqlBackupManager
     {
         readonly DateTimePicker dtFrom = Date(130), dtTo = Date(130);
         readonly ComboBox cbStatus = Combo(100);
-        readonly ComboBox cbJob = Combo(180);
+        readonly ComboBox cbJob = Combo(160);
         readonly TextBox txtSearch = Box(160);
         readonly DataGridView gridRuns = new DataGridView(), gridDetail = new DataGridView();
         readonly Label lblCount = new Label { AutoSize = true, UseMnemonic = false };
@@ -731,10 +731,14 @@ namespace SqlBackupManager
             export.Click += (s, e) => Export();
             open.Click += (s, e) => Process.Start("explorer.exe", AppPaths.LogDir);
 
-            var bar = Toolbar(Theme.Lbl("日期"), dtFrom, Theme.Lbl("至"), dtTo, Theme.Lbl("工作"), cbJob, Theme.Lbl("結果"), cbStatus, Theme.Lbl("關鍵字"), txtSearch, query, export, open, clear);
+            var bar = Toolbar(Theme.Lbl("日期"), dtFrom, Theme.Lbl("至"), dtTo, Theme.Lbl("工作"), cbJob, Theme.Lbl("結果"), cbStatus, Theme.Lbl("關鍵字"), txtSearch, query);
             lblCount.Font = Theme.F(9f); lblCount.ForeColor = Theme.SubText;
-            var countHost = new Panel { Height = TextRenderer.MeasureText("國", lblCount.Font).Height + Theme.S(4) };
-            countHost.Controls.Add(lblCount);
+            // 第二列：左邊統計，右邊動作按鈕
+            var actions = Toolbar(export, open, clear);
+            actions.WrapContents = false; actions.Dock = DockStyle.Right;
+            var countHost = new Panel { Height = actions.PreferredSize.Height, BackColor = Color.Transparent };
+            lblCount.Dock = DockStyle.Fill; lblCount.AutoSize = false; lblCount.TextAlign = ContentAlignment.MiddleLeft;
+            countHost.Controls.Add(lblCount); countHost.Controls.Add(actions);
 
             gridRuns.Columns.AddRange(Theme.Col("開始時間", 15, 150), Theme.Col("工作", 16), Theme.Col("類型", 9), Theme.Col("結果", 6, 50), Theme.Col("資料庫", 10), Theme.Col("備份量", 8), Theme.Col("耗時", 7), Theme.Col("摘要", 40));
             ColorStatus(gridRuns, 3);
