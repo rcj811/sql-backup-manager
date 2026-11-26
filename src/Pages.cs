@@ -736,9 +736,9 @@ namespace SqlBackupManager
             var countHost = new Panel { Height = TextRenderer.MeasureText("國", lblCount.Font).Height + Theme.S(4) };
             countHost.Controls.Add(lblCount);
 
-            gridRuns.Columns.AddRange(Theme.Col("開始時間", 14, 150), Theme.Col("工作", 14), Theme.Col("類型", 10), Theme.Col("結果", 7, 60), Theme.Col("資料庫", 12), Theme.Col("備份量", 9), Theme.Col("耗時", 8), Theme.Col("摘要", 36));
+            gridRuns.Columns.AddRange(Theme.Col("開始時間", 15, 150), Theme.Col("工作", 16), Theme.Col("類型", 9), Theme.Col("結果", 6, 50), Theme.Col("資料庫", 10), Theme.Col("備份量", 8), Theme.Col("耗時", 7), Theme.Col("摘要", 40));
             ColorStatus(gridRuns, 3);
-            gridDetail.Columns.AddRange(Theme.Col("時間", 10, 90), Theme.Col("資料庫", 11), Theme.Col("狀態", 7, 56), Theme.Col("大小", 8), Theme.Col("耗時", 8), Theme.Col("內容", 36), Theme.Col("檔案", 20));
+            gridDetail.Columns.AddRange(Theme.Col("時間", 9, 80), Theme.Col("資料庫", 9), Theme.Col("狀態", 6, 50), Theme.Col("大小", 8), Theme.Col("耗時", 7), Theme.Col("內容", 50), Theme.Col("檔案", 22));
             ColorStatus(gridDetail, 2);
             gridRuns.SelectionChanged += (s, e) => ShowDetail();
             gridDetail.CellDoubleClick += (s, e) =>
@@ -753,11 +753,17 @@ namespace SqlBackupManager
             var runsCard = GridCard("執行紀錄（每次執行一筆，點選查看明細）", gridRuns);
             lblEmpty.Font = Theme.F(10f); lblEmpty.ForeColor = Theme.SubText; lblEmpty.BackColor = Color.White;
             lblEmpty.Text = "請設定日期、工作或結果等條件後，按「查詢」顯示日誌";
-            runsCard.Body.Controls.Add(lblEmpty); lblEmpty.BringToFront();
+            gridRuns.Paint += (s, e) =>
+            {
+                if (gridRuns.Rows.Count > 0 || string.IsNullOrEmpty(lblEmpty.Text)) return;
+                int top = gridRuns.ColumnHeadersHeight;
+                var r = new Rectangle(0, top, gridRuns.ClientSize.Width, Math.Max(Theme.S(40), gridRuns.ClientSize.Height - top));
+                TextRenderer.DrawText(e.Graphics, lblEmpty.Text, lblEmpty.Font, r, Theme.SubText, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+            };
             var detailCard = GridCard("本次執行明細（依時間先後）", gridDetail);
             var split = new TableLayoutPanel { ColumnCount = 1, RowCount = 2, BackColor = Color.Transparent, Margin = new Padding(0) };
-            split.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
-            split.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+            split.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            split.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             runsCard.Dock = DockStyle.Fill; detailCard.Dock = DockStyle.Fill;
             runsCard.Margin = new Padding(0, 0, 0, Theme.S(12)); detailCard.Margin = new Padding(0);
             split.Controls.Add(runsCard, 0, 0); split.Controls.Add(detailCard, 0, 1);
@@ -777,8 +783,8 @@ namespace SqlBackupManager
             {
                 current = new List<LogGroup>();
                 gridRuns.Rows.Clear(); gridDetail.Rows.Clear();
-                lblEmpty.Visible = true;
-                lblCount.Text = "";
+                lblEmpty.Text = "請設定日期、工作或結果等條件後，按「查詢」顯示日誌";
+                lblCount.Text = ""; gridRuns.Invalidate();
             }
         }
 
@@ -807,8 +813,8 @@ namespace SqlBackupManager
                 if (g.Id == selId) gridRuns.CurrentCell = gridRuns.Rows[r].Cells[0];
             }
             gridRuns.ResumeLayout();
-            lblEmpty.Visible = current.Count == 0;
             lblEmpty.Text = current.Count == 0 ? "沒有符合條件的日誌" : "";
+            gridRuns.Invalidate();
             lblCount.Text = string.Format("共 {0} 次執行　成功 {1}　失敗 {2}　警告 {3}（日誌 {4} 筆）", current.Count, current.Count(g => g.Status == LogEntry.Success),
                 current.Count(g => g.Status == LogEntry.Failed), current.Count(g => g.Status == LogEntry.Warning), current.Sum(g => g.Entries.Count));
             ShowDetail();
