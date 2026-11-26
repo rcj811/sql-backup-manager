@@ -542,14 +542,16 @@ namespace SqlBackupManager
                     lp.RunQuery(); Pump(600);
                     Assert(lp.RunCount == 2, "兩次執行應整合成 2 筆，實際 " + lp.RunCount);
                     Shot(f, fs + "pt_4b_日誌查詢後.png");
-                    // 切到其他頁再回來，查詢結果與點選的那筆都要保留
-                    try { lp.SelectRun(1); } catch { }
-                    Pump(200);
-                    var pick = lp.SelectedRunId;
-                    f.ShowPage(0); Pump(400); f.ShowPage(1); Pump(400); f.ShowPage(3); Pump(600);
-                    Assert(lp.RunCount == 2 && lp.HasRows, "切換頁面後日誌被清除了");
-                    Assert(lp.DetailCount >= 3, "切換頁面後明細沒有保留（" + lp.DetailCount + " 筆）");
-                    Assert(pick == null || lp.SelectedRunId == pick, "切換頁面後點選的那筆跑掉了");
+                    // 停留在日誌頁時有新日誌：自動用相同條件更新
+                    Activity.Begin("備份：" + js[0].Name, 1, js[0].Name);
+                    Logger.Write(new LogEntry { Job = js[0].Name, Database = "NACC", Kind = "完整備份", Status = LogEntry.Success, SizeBytes = 1024, Message = "已驗證" });
+                    Activity.Finish(LogEntry.Success, "成功 1");
+                    Pump(1500);
+                    Assert(lp.RunCount == 3, "停留在日誌頁時新日誌沒有更新（" + lp.RunCount + "）");
+                    // 切到其他頁再回來：日誌清空，要重新查詢才顯示
+                    f.ShowPage(0); Pump(400); f.ShowPage(3); Pump(600);
+                    Assert(!lp.HasRows && lp.DetailCount == 0, "切換頁面回來後日誌沒有清空");
+                    Shot(f, fs + "pt_4c_切換回來已清空.png");
                     var je = new JobEditForm(js[1].Clone(), js[1]) { StartPosition = FormStartPosition.Manual, Location = new Point(40, 40) };
                     je.Show(); Pump(800);
                     var tabs = (TabControl)je.Controls[0];

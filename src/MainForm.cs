@@ -187,6 +187,7 @@ namespace SqlBackupManager
         public void ShowPage(int idx)
         {
             for (int i = 0; i < pages.Count; i++) { navs[i].Selected = i == idx; navs[i].Invalidate(); }
+            if (current != null && current != pages[idx]) current.OnPageLeave();
             current = pages[idx];
             current.Visible = true;
             current.BringToFront();

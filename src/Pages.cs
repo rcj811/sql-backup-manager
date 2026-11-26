@@ -23,6 +23,8 @@ namespace SqlBackupManager
         }
 
         public virtual void RefreshData() { }
+        /// <summary>離開此頁 (切換到其他頁) 時呼叫。</summary>
+        public virtual void OnPageLeave() { }
 
         /// <summary>視窗太小時頁面可捲動，內容不會被擠扁或切掉。</summary>
         protected void MinContent(int w, int h)
@@ -708,6 +710,7 @@ namespace SqlBackupManager
         readonly Label lblEmpty = new Label { AutoSize = false, UseMnemonic = false, TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Fill };
         List<LogGroup> current = new List<LogGroup>();
         bool queried;
+        volatile bool newLogs;
 
         public LogPage(MainForm m) : base(m, "備份日誌")
         {
@@ -727,6 +730,9 @@ namespace SqlBackupManager
                 Main.SetStatus("已清除 " + n + " 個日誌檔", 0);
             };
             query.Click += (s, e) => { queried = true; Query(); };
+            Action<LogEntry> onNew = e2 => newLogs = true;
+            Logger.EntryAdded += onNew;
+            Disposed += (s, e) => Logger.EntryAdded -= onNew;
             txtSearch.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; queried = true; Query(); } };
             export.Click += (s, e) => Export();
             open.Click += (s, e) => Process.Start("explorer.exe", AppPaths.LogDir);
@@ -774,6 +780,19 @@ namespace SqlBackupManager
             Stack(bar, countHost, split);
         }
 
+        /// <summary>切換到其他頁面：清除查詢結果與條件，回來時重新設定條件再查詢。</summary>
+        public override void OnPageLeave()
+        {
+            queried = false; newLogs = false;
+            dtFrom.Value = DateTime.Today.AddDays(-7); dtTo.Value = DateTime.Today;
+            cbStatus.SelectedIndex = 0; txtSearch.Text = "";
+            if (cbJob.Items.Count > 0) cbJob.SelectedIndex = 0;
+            current = new List<LogGroup>();
+            gridRuns.Rows.Clear(); gridDetail.Rows.Clear();
+            lblEmpty.Text = "請設定日期、工作或結果等條件後，按「查詢」顯示日誌";
+            lblCount.Text = "";
+        }
+
         /// <summary>切換到本頁或有新日誌時：還沒查詢過就保持空白；查詢過就用相同條件重新整理。</summary>
         public override void RefreshData()
         {
@@ -782,7 +801,11 @@ namespace SqlBackupManager
             foreach (var j in SettingsStore.Current.Jobs.Select(x => x.Name).Concat(new[] { "還原" }).Distinct()) cbJob.Items.Add(j);
             int ix = sel == null ? 0 : cbJob.Items.IndexOf(sel);
             cbJob.SelectedIndex = ix >= 0 ? ix : 0;
-            if (queried) Query();
+            if (queried)
+            {
+                // 停留在日誌頁時有新日誌：用相同條件自動更新
+                if (newLogs) { newLogs = false; Query(); }
+            }
             else
             {
                 current = new List<LogGroup>();
@@ -801,6 +824,13 @@ namespace SqlBackupManager
         public void SelectRun(int i) { gridRuns.CurrentCell = gridRuns.Rows[i].Cells[0]; }
 
         void Query()
+        {
+            newLogs = false;
+            try { DoQuery(); }
+            catch (Exception ex) { Main.SetStatus("日誌查詢失敗：" + ex.Message, 0); }
+        }
+
+        void DoQuery()
         {
             var list = Logger.Read(dtFrom.Value.Date, dtTo.Value.Date.AddDays(1).AddSeconds(-1));
             var groups = Logger.Group(list);
